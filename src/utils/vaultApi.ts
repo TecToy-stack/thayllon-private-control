@@ -794,3 +794,75 @@ export async function updateVaultSecurity(
 export function getApiEndpoint(path: string): string {
   return apiUrl(path);
 }
+
+export async function uploadServerBackupSnapshot(
+  authToken: string,
+  appState: Record<string, unknown>,
+  source: 'auto_24h' | 'manual' = 'auto_24h'
+): Promise<boolean> {
+  if (!authToken || parseOfflineToken(authToken)) return false;
+  try {
+    const server = await callServerJson<{ savedAt?: string }>('/api/vault/backup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ appState, source }),
+    });
+    return Boolean(server.reachable && server.ok);
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchLatestServerBackup(authToken: string): Promise<{
+  available: boolean;
+  lastAutoBackupAt?: string;
+  nextAutoBackupAt?: string;
+  lastBackup?: {
+    id: string;
+    savedAt: string;
+    state: AppState;
+  } | null;
+}> {
+  if (!authToken || parseOfflineToken(authToken)) {
+    return { available: false, lastBackup: null };
+  }
+  const server = await callServerJson<{
+    available: boolean;
+    lastAutoBackupAt?: string;
+    nextAutoBackupAt?: string;
+    lastBackup?: { id: string; savedAt: string; state: AppState } | null;
+  }>('/api/vault/backup/latest', {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+    },
+  });
+  if (!server.reachable || !server.ok) {
+    return { available: false, lastBackup: null };
+  }
+  return server.data;
+}
+
+export async function refreshVaultFromServer(authToken: string): Promise<AppState | null> {
+  if (!authToken || parseOfflineToken(authToken)) return null;
+  const server = await callServerJson<{
+    profile: UserProfile;
+    appState: AppState;
+  }>('/api/vault', {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+    },
+  });
+  if (!server.reachable || !server.ok || !server.data.appState) return null;
+  const local = await readOfflineVault(server.data.profile.cpfId);
+  if (local) {
+    local.appState = server.data.appState;
+    await writeOfflineVault(local);
+  }
+  return server.data.appState;
+}
+

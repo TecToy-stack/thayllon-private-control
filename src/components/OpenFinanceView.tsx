@@ -1,12 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertCircle,
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
-  Clock,
-  CreditCard,
   ExternalLink,
   Filter,
   Landmark,
@@ -22,10 +20,8 @@ import {
   Trash2,
   Unplug,
   X,
-  Zap,
 } from 'lucide-react';
 import {
-  AccountStatus,
   AccountType,
   AppSettings,
   AuditEvent,
@@ -33,63 +29,40 @@ import {
   AutoRule,
   BankAccount,
   CategoryRow,
-  ConnectorProvider,
-  EntryNature,
-  InvoiceState,
-  PaymentMethod,
 } from '../types/finance';
-import { MAX_BANK_ACCOUNTS, MONTH_NAMES_FULL } from '../data/initialData';
-import { formatBRL, formatCompactDay } from '../utils/financeEngine';
-import { buildConsentExpirationDate, evaluateAccountHealth } from '../utils/openFinance';
+import { MAX_BANK_ACCOUNTS } from '../data/initialData';
+import { BRAZILIAN_BANKS, BankCategory } from '../data/brazilBanks';
+import { formatBRL } from '../utils/financeEngine';
+import { evaluateAccountHealth } from '../utils/openFinance';
+import {
+  fetchOpenFinanceStatus,
+  initiateOpenFinanceConsent,
+  OpenFinanceBackendStatus,
+  revokeOpenFinanceConsent,
+  syncOpenFinanceConsent,
+} from '../utils/openFinanceApi';
 import { getTranslations } from '../utils/i18n';
 
 interface OpenFinanceViewProps {
+  authToken: string;
   accounts: BankAccount[];
   revokedConsents: BankAccount[];
   rows: CategoryRow[];
   rules: AutoRule[];
   auditLog: AuditEvent[];
   settings: AppSettings;
-  onConnectAccount: (account: Omit<BankAccount, 'id' | 'slot' | 'lastSync'>) => void;
-  onSyncAccount: (accountId: string) => void;
-  onRenewConsent: (accountId: string, termMonths?: number) => void;
-  onSetAccountStatus: (accountId: string, status: AccountStatus, statusMessage?: string) => void;
   onTogglePauseAccount: (accountId: string) => void;
   onDisconnectAccount: (accountId: string) => void;
   onAddRule: (rule: Omit<AutoRule, 'id'>) => void;
   onToggleRule: (ruleId: string) => void;
   onDeleteRule: (ruleId: string) => void;
-  onSimulateTransaction: (payload: {
-    accountId: string;
-    description: string;
-    merchant: string;
-    paymentMethod: PaymentMethod;
-    entryNature?: EntryNature;
-    installmentCurrent?: number;
-    installmentTotal?: number;
-    amount: number;
-    month: number;
-    day: number;
-    type: 'inflow' | 'outflow';
-  }) => { matchedRowName: string; isDeduplicated: boolean };
+  onRefreshVault: () => Promise<void>;
+  onApplySyncedState: (patch: {
+    accounts?: BankAccount[];
+    revokedConsents?: BankAccount[];
+    auditLog?: AuditEvent[];
+  }) => void;
 }
-
-const INSTITUTION_PRESETS = [
-  { name: 'Nubank Ultravioleta', code: '260', color: '#8B5CF6' },
-  { name: 'Santander Select', code: '033', color: '#EF4444' },
-  { name: 'Mercado Pago', code: '323', color: '#0EA5E9' },
-  { name: 'Itaú Personnalité', code: '341', color: '#EA580C' },
-  { name: 'Banco Inter', code: '077', color: '#F97316' },
-  { name: 'BTG Pactual', code: '208', color: '#1E40AF' },
-  { name: 'C6 Carbon', code: '336', color: '#475569' },
-  { name: 'Caixa Econômica', code: '104', color: '#0284C7' },
-];
-
-const CONNECTOR_PROVIDERS: ConnectorProvider[] = [
-  'Open Finance Brasil (FAPI)',
-  'Pluggy',
-  'Belvo',
-];
 
 const SCOPE_OPTIONS: { code: string; label: string; desc: string }[] = [
   {
@@ -108,9 +81,14 @@ const SCOPE_OPTIONS: { code: string; label: string; desc: string }[] = [
     desc: 'Histórico de entradas, débitos, Pix e compras para a Grade Mensal.',
   },
   {
-    code: 'CREDIT_CARD_READ',
-    label: 'Limite de crédito',
-    desc: 'Faturas abertas/fechadas, vencimentos e limite disponível.',
+    code: 'CREDIT_CARDS_ACCOUNTS_READ',
+    label: 'Limites de crédito',
+    desc: 'Limite total e disponível do cartão sem expor número ou CVV.',
+  },
+  {
+    code: 'CREDIT_CARDS_BILLS_READ',
+    label: 'Faturas de cartão',
+    desc: 'Faturas abertas, fechadas e datas de vencimento.',
   },
 ];
 
@@ -118,146 +96,68 @@ const SCOPE_LABELS: Record<string, string> = {
   ACCOUNTS_READ: 'Dados cadastrais',
   BALANCES_READ: 'Saldos',
   TRANSACTIONS_READ: 'Extratos / Transações',
-  CREDIT_CARD_READ: 'Limite de crédito',
+  CREDIT_CARD_READ: 'Cartão de crédito',
+  CREDIT_CARDS_ACCOUNTS_READ: 'Limites de crédito',
+  CREDIT_CARDS_BILLS_READ: 'Faturas de cartão',
 };
 
-const QUICK_MOVEMENT_PRESETS = [
-  {
-    label: 'Pix recebido · Pizzaria',
-    description: 'Pix Recebido Pizzaria Turno',
-    merchant: 'Repasse Pizzaria',
-    paymentMethod: 'pix' as PaymentMethod,
-    entryNature: 'standard' as EntryNature,
-    type: 'inflow' as const,
-    amount: '420.00',
-    day: '8',
-    installmentCurrent: '1',
-    installmentTotal: '1',
-  },
-  {
-    label: 'Compra no cartão · Mercado',
-    description: 'Compra Cartão SA Supermercado',
-    merchant: 'Supermercado Central',
-    paymentMethod: 'credit' as PaymentMethod,
-    entryNature: 'standard' as EntryNature,
-    type: 'outflow' as const,
-    amount: '248.90',
-    day: '14',
-    installmentCurrent: '1',
-    installmentTotal: '1',
-  },
-  {
-    label: 'Débito em conta · Combustível/Moto',
-    description: 'Posto Shell Combustivel Moto',
-    merchant: 'Posto Shell',
-    paymentMethod: 'debit' as PaymentMethod,
-    entryNature: 'standard' as EntryNature,
-    type: 'outflow' as const,
-    amount: '65.00',
-    day: '16',
-    installmentCurrent: '1',
-    installmentTotal: '1',
-  },
-  {
-    label: 'Boleto / Transferência · Energia',
-    description: 'Boleto Enel Energia Eletrica',
-    merchant: 'Enel Distribuição',
-    paymentMethod: 'transfer' as PaymentMethod,
-    entryNature: 'standard' as EntryNature,
-    type: 'outflow' as const,
-    amount: '194.50',
-    day: '15',
-    installmentCurrent: '1',
-    installmentTotal: '1',
-  },
-  {
-    label: 'Pagamento de Fatura (Anti-Duplicidade)',
-    description: 'Pagamento Fatura Cartão MP',
-    merchant: 'Quitação Fatura MP',
-    paymentMethod: 'transfer' as PaymentMethod,
-    entryNature: 'invoice_payment' as EntryNature,
-    type: 'outflow' as const,
-    amount: '240.03',
-    day: '17',
-    installmentCurrent: '1',
-    installmentTotal: '1',
-  },
+const BANK_CATEGORIES: ('all' | BankCategory)[] = [
+  'all',
+  'Tradicional',
+  'Digital',
+  'Cooperativa',
+  'Corretora / Pagamentos',
 ];
 
 export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
+  authToken,
   accounts,
   revokedConsents,
   rows,
   rules,
   auditLog,
   settings,
-  onConnectAccount,
-  onSyncAccount,
-  onRenewConsent,
-  onSetAccountStatus,
   onTogglePauseAccount,
   onDisconnectAccount,
   onAddRule,
   onToggleRule,
   onDeleteRule,
-  onSimulateTransaction,
+  onRefreshVault,
+  onApplySyncedState,
 }) => {
   const { privacyMode, language } = settings;
   const t = getTranslations(language);
   const isAtLimit = accounts.length >= MAX_BANK_ACCOUNTS;
 
-  // Sub-section filter / tabs inside Open Finance view
-  const [sectionView, setSectionView] = useState<'all' | 'consents' | 'simulator' | 'audit'>('all');
+  const [sectionView, setSectionView] = useState<'all' | 'consents' | 'rules' | 'audit'>('all');
+  const [backendStatus, setBackendStatus] = useState<OpenFinanceBackendStatus | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [actionFeedback, setActionFeedback] = useState<{
+    type: 'ok' | 'warn' | 'err';
+    text: string;
+  } | null>(null);
 
-  // Consent actions state
   const [syncingId, setSyncingId] = useState<string | null>(null);
-  const [renewingId, setRenewingId] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
-  const timerRef = useRef<number | null>(null);
 
-  // 4-Step Guided Connection Wizard State
+  // Real OAuth Wizard State
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [wizardStep, setWizardStep] = useState<1 | 2 | 3 | 4>(1);
-  const [instName, setInstName] = useState(INSTITUTION_PRESETS[0].name);
-  const [connectorProvider, setConnectorProvider] = useState<ConnectorProvider>(
-    'Open Finance Brasil (FAPI)'
-  );
-  const [instType, setInstType] = useState<AccountType>('Digital');
-  const [nickname, setNickname] = useState('Conta Principal Open Finance');
-  const [initialBalance, setInitialBalance] = useState('0.00');
-  const [creditLimit, setCreditLimit] = useState('6000.00');
-  const [closingDay, setClosingDay] = useState('3');
-  const [dueDay, setDueDay] = useState('10');
-  const [invoiceState, setInvoiceState] = useState<InvoiceState>('open');
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
+  const [bankSearch, setBankSearch] = useState('');
+  const [bankCategory, setBankCategory] = useState<'all' | BankCategory>('all');
+  const [selectedBankId, setSelectedBankId] = useState(BRAZILIAN_BANKS[0].id);
+  const [instType, setInstType] = useState<AccountType>('Corrente');
   const [selectedScopes, setSelectedScopes] = useState<string[]>([
     'ACCOUNTS_READ',
     'BALANCES_READ',
     'TRANSACTIONS_READ',
   ]);
-  const [consentTermMonths, setConsentTermMonths] = useState(12);
-  const [pkceAuthorized, setPkceAuthorized] = useState(false);
-  const [pkceHandshakeChallenge, setPkceHandshakeChallenge] = useState('');
-  const [defaultRowId, setDefaultRowId] = useState('var-outros');
-  const [wizardNewKeyword, setWizardNewKeyword] = useState('');
-  const [wizardNewRuleRowId, setWizardNewRuleRowId] = useState('inc-pizzaria');
+  const [consentTermMonths, setConsentTermMonths] = useState(6);
+  const [initiatingConsent, setInitiatingConsent] = useState(false);
+  const [pendingAuthUrl, setPendingAuthUrl] = useState<string | null>(null);
 
-  // Transaction Simulator State
-  const [simAccountId, setSimAccountId] = useState(accounts[0]?.id ?? '');
-  const [simDesc, setSimDesc] = useState('Compra Cartão SA Supermercado');
-  const [simMerchant, setSimMerchant] = useState('Supermercado Central');
-  const [simPaymentMethod, setSimPaymentMethod] = useState<PaymentMethod>('credit');
-  const [simNature, setSimNature] = useState<EntryNature>('standard');
-  const [simType, setSimType] = useState<'inflow' | 'outflow'>('outflow');
-  const [simAmount, setSimAmount] = useState('248.90');
-  const [simDay, setSimDay] = useState('14');
-  const [simMonth, setSimMonth] = useState(
-    Math.min(11, Math.max(0, settings.focusMonth ?? 10))
-  );
-  const [simInstallmentCurrent, setSimInstallmentCurrent] = useState('1');
-  const [simInstallmentTotal, setSimInstallmentTotal] = useState('1');
-  const [simFeedback, setSimFeedback] = useState<string | null>(null);
-
-  // Rules management quick form
+  // Rules management
   const [newRuleKeyword, setNewRuleKeyword] = useState('');
   const [newRuleRowId, setNewRuleRowId] = useState('var-mercado');
 
@@ -265,23 +165,70 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
   const [auditTypeFilter, setAuditTypeFilter] = useState<'all' | AuditEventType>('all');
   const [auditSearch, setAuditSearch] = useState('');
 
+  const visibleRows = useMemo(() => rows.filter((r) => !r.hidden), [rows]);
+
+  const filteredBanks = useMemo(() => {
+    const q = bankSearch.trim().toLowerCase();
+    return BRAZILIAN_BANKS.filter((bank) => {
+      if (bankCategory !== 'all' && bank.category !== bankCategory) return false;
+      if (!q) return true;
+      return (
+        bank.name.toLowerCase().includes(q) ||
+        bank.shortName.toLowerCase().includes(q) ||
+        bank.code.includes(q) ||
+        bank.ispb.includes(q)
+      );
+    });
+  }, [bankSearch, bankCategory]);
+
+  const selectedBank = useMemo(
+    () => BRAZILIAN_BANKS.find((b) => b.id === selectedBankId) ?? BRAZILIAN_BANKS[0],
+    [selectedBankId]
+  );
+
+  const loadStatus = async () => {
+    setLoadingStatus(true);
+    const status = await fetchOpenFinanceStatus();
+    setBackendStatus(status);
+    setLoadingStatus(false);
+  };
+
   useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) {
-        window.clearTimeout(timerRef.current);
-      }
-    };
+    void loadStatus();
   }, []);
 
+  // Listen to OAuth Callback postMessage from popup
   useEffect(() => {
-    if (accounts.length === 0) {
-      setSimAccountId('');
-    } else if (!accounts.some((a) => a.id === simAccountId)) {
-      setSimAccountId(accounts[0].id);
-    }
-  }, [accounts, simAccountId]);
+    const onMessage = (event: MessageEvent) => {
+      if (typeof window !== 'undefined' && event.origin !== window.location.origin) {
+        return;
+      }
+      const data = event.data as {
+        type?: string;
+        status?: 'active' | 'error';
+        institution?: string;
+        error?: string | null;
+      } | null;
+      if (!data || data.type !== 'TPC_OPEN_FINANCE_CALLBACK') return;
 
-  const visibleRows = useMemo(() => rows.filter((r) => !r.hidden), [rows]);
+      void onRefreshVault();
+      setPendingAuthUrl(null);
+      setWizardOpen(false);
+      if (data.status === 'active') {
+        setActionFeedback({
+          type: 'ok',
+          text: `Autorização concluída no banco (${data.institution ?? 'Instituição'}). Utilize "Sincronizar agora" para ler os dados reais.`,
+        });
+      } else {
+        setActionFeedback({
+          type: 'err',
+          text: data.error || 'A autorização no banco oficial não foi concluída.',
+        });
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onRefreshVault]);
 
   const formatSafeDateTime = (iso: string) => {
     const dt = new Date(iso);
@@ -300,28 +247,6 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
     [accounts]
   );
 
-  // Preview auto-categorization match in real time for the simulator
-  const matchedRulePreview = useMemo(() => {
-    const text = `${simDesc} ${simMerchant}`.toLowerCase();
-    const matchedRule = rules.find((r) => r.enabled && text.includes(r.keyword.toLowerCase()));
-    if (matchedRule) {
-      const target = rows.find((r) => r.id === matchedRule.targetRowId && !r.hidden);
-      if (target) {
-        return { rowName: target.name, ruleKeyword: matchedRule.keyword };
-      }
-    }
-    const acc = accounts.find((a) => a.id === simAccountId);
-    if (simType === 'inflow') {
-      const fallback = rows.find((r) => r.id === 'inc-extras') ?? rows.find((r) => r.block === 'income');
-      return { rowName: fallback?.name ?? 'EXTRAS', ruleKeyword: null };
-    }
-    const fallback =
-      (acc?.defaultRowId ? rows.find((r) => r.id === acc.defaultRowId) : undefined) ??
-      rows.find((r) => r.id === 'var-outros');
-    return { rowName: fallback?.name ?? 'OUTROS', ruleKeyword: null };
-  }, [simDesc, simMerchant, simType, simAccountId, rules, rows, accounts]);
-
-  // Filtered Audit Log
   const filteredAuditLog = useMemo(() => {
     const q = auditSearch.trim().toLowerCase();
     return auditLog.filter((ev) => {
@@ -355,11 +280,11 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
   const handleOpenWizard = () => {
     if (isAtLimit) return;
     setWizardStep(1);
-    setPkceAuthorized(false);
-    setPkceHandshakeChallenge(`pkce_${Math.random().toString(36).slice(2, 10)}`);
+    setPendingAuthUrl(null);
+    setActionFeedback(null);
     setSelectedScopes(
       instType === 'Cartão de Crédito'
-        ? ['ACCOUNTS_READ', 'CREDIT_CARD_READ', 'TRANSACTIONS_READ']
+        ? ['ACCOUNTS_READ', 'CREDIT_CARDS_ACCOUNTS_READ', 'CREDIT_CARDS_BILLS_READ', 'TRANSACTIONS_READ']
         : ['ACCOUNTS_READ', 'BALANCES_READ', 'TRANSACTIONS_READ']
     );
     setWizardOpen(true);
@@ -375,130 +300,117 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
     );
   };
 
-  const handleWizardAddRule = () => {
-    if (!wizardNewKeyword.trim()) return;
-    onAddRule({
-      keyword: wizardNewKeyword.trim().toLowerCase(),
-      targetRowId: wizardNewRuleRowId,
-      enabled: true,
-    });
-    setWizardNewKeyword('');
+  const handleStartOfficialOAuth = async () => {
+    if (isAtLimit || initiatingConsent) return;
+    setInitiatingConsent(true);
+    setActionFeedback(null);
+    setPendingAuthUrl(null);
+
+    try {
+      const resp = await initiateOpenFinanceConsent(authToken, {
+        institutionId: selectedBank.id,
+        institutionName: selectedBank.name,
+        accountType: instType,
+        termMonths: consentTermMonths,
+        scope: selectedScopes,
+      });
+
+      if (!resp.configured || !resp.authorizationUrl) {
+        setActionFeedback({
+          type: 'warn',
+          text:
+            resp.message ||
+            resp.error ||
+            'Aguardando configuração do provedor/credenciais Open Finance no backend.',
+        });
+        setInitiatingConsent(false);
+        return;
+      }
+
+      await onRefreshVault();
+      setPendingAuthUrl(resp.authorizationUrl);
+
+      const popup = window.open(
+        resp.authorizationUrl,
+        'tpc_open_finance_oauth',
+        'width=520,height=740,noopener=no'
+      );
+      if (!popup) {
+        setActionFeedback({
+          type: 'warn',
+          text: 'Pop-up bloqueado pelo navegador. Clique no link direto exibido no modal para concluir no banco.',
+        });
+      } else {
+        setActionFeedback({
+          type: 'ok',
+          text: `Fluxo oficial aberto para ${selectedBank.name}. Conclua a autorização no ambiente do banco.`,
+        });
+      }
+    } catch {
+      setActionFeedback({
+        type: 'err',
+        text: 'Não foi possível comunicar com o servidor para iniciar o consentimento Open Finance.',
+      });
+    } finally {
+      setInitiatingConsent(false);
+    }
   };
 
-  const handleCompleteWizard = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isAtLimit || !pkceAuthorized) return;
-
-    const preset = INSTITUTION_PRESETS.find((p) => p.name === instName) ?? INSTITUTION_PRESETS[0];
-    const parsedBal = parseFloat(initialBalance.replace(',', '.'));
-    const safeBal = Number.isFinite(parsedBal) ? Number(parsedBal.toFixed(2)) : 0;
-    const parsedLimit = parseFloat(creditLimit.replace(',', '.'));
-    const safeLimit =
-      instType === 'Cartão de Crédito' && Number.isFinite(parsedLimit) && parsedLimit > 0
-        ? Number(parsedLimit.toFixed(2))
-        : undefined;
-    const safeClosing = Math.min(31, Math.max(1, parseInt(closingDay, 10) || 3));
-    const safeDue = Math.min(31, Math.max(1, parseInt(dueDay, 10) || 10));
-    const availableLimit =
-      safeLimit !== undefined
-        ? Number(Math.max(0, safeLimit - Math.abs(Math.min(0, safeBal))).toFixed(2))
-        : undefined;
-    const randomSuffix = Math.floor(1000 + Math.random() * 8999);
-    const nowDate = new Date();
-
-    onConnectAccount({
-      institution: preset.name,
-      institutionCode: preset.code,
-      type: instType,
-      nickname: nickname.trim() || preset.name,
-      balance: safeBal,
-      color: preset.color,
-      status: 'active',
-      connectorProvider,
-      consentGrantedAt: nowDate.toISOString().slice(0, 10),
-      consentExpiresAt: buildConsentExpirationDate(consentTermMonths, nowDate),
-      consentScope: selectedScopes,
-      pkceChallengeId: pkceHandshakeChallenge || `pkce_${Math.random().toString(36).slice(2, 10)}`,
-      maskedAccount:
-        instType === 'Cartão de Crédito'
-          ? `Final •••• ${randomSuffix}`
-          : `Ag 0001 · CC •••• ${randomSuffix}-0`,
-      defaultRowId,
-      ...(instType === 'Cartão de Crédito'
-        ? {
-            creditLimit: safeLimit,
-            availableLimit,
-            invoiceClosingDay: safeClosing,
-            invoiceDueDay: safeDue,
-            currentInvoiceStatus: invoiceState,
-          }
-        : {}),
-    });
-    setWizardOpen(false);
-  };
-
-  const handleSync = (id: string) => {
-    setSyncingId(id);
-    onSyncAccount(id);
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
+  const handleSyncReal = async (consentId: string) => {
+    setSyncingId(consentId);
+    setActionFeedback(null);
+    try {
+      const result = await syncOpenFinanceConsent(authToken, consentId);
+      if (!result.ok) {
+        setActionFeedback({
+          type: 'warn',
+          text:
+            result.error ||
+            'Aguardando configuração do provedor/credenciais Open Finance no backend.',
+        });
+      } else {
+        onApplySyncedState({
+          accounts: result.accounts,
+          auditLog: result.auditLog,
+        });
+        setActionFeedback({
+          type: 'ok',
+          text: 'Sincronização executada diretamente pelo conector oficial.',
+        });
+      }
+    } catch {
+      setActionFeedback({
+        type: 'err',
+        text: 'Erro ao consultar o endpoint de sincronização Open Finance.',
+      });
+    } finally {
       setSyncingId(null);
-    }, 500);
+    }
   };
 
-  const handleRenew = (id: string) => {
-    setRenewingId(id);
-    onRenewConsent(id, 12);
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      setRenewingId(null);
-    }, 500);
-  };
-
-  const handleRunSimulation = (e: React.FormEvent) => {
-    e.preventDefault();
-    const targetAcc = accounts.find((a) => a.id === simAccountId) ?? accounts[0];
-    if (!targetAcc) return;
-    const parsed = parseFloat(simAmount.replace(',', '.'));
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
-
-    const safeMonth = Math.min(11, Math.max(0, Number.isFinite(simMonth) ? Math.trunc(simMonth) : 10));
-    const safeDay = Math.min(31, Math.max(1, parseInt(simDay, 10) || 15));
-    const totInst = Math.min(48, Math.max(1, parseInt(simInstallmentTotal, 10) || 1));
-    const curInst = Math.min(totInst, Math.max(1, parseInt(simInstallmentCurrent, 10) || 1));
-
-    const result = onSimulateTransaction({
-      accountId: targetAcc.id,
-      description: simDesc.trim() || 'Movimentação Open Finance',
-      merchant: simMerchant.trim() || simDesc.trim() || 'Estabelecimento',
-      paymentMethod: simPaymentMethod,
-      entryNature: simNature,
-      installmentCurrent: curInst,
-      installmentTotal: totInst,
-      amount: Number(parsed.toFixed(2)),
-      month: safeMonth,
-      day: safeDay,
-      type: simType,
-    });
-
-    if (result.isDeduplicated) {
-      setSimFeedback(
-        `Conciliação anti-duplicidade registrada em D/${String(safeDay).padStart(2, '0')}: ${formatBRL(
-          parsed,
-          privacyMode
-        )} (${
-          simNature === 'invoice_payment' ? 'Pagamento de Fatura' : 'Transferência Interna'
-        }) não duplicado nos gastos reais.`
-      );
-    } else {
-      setSimFeedback(
-        `Movimentação (${simPaymentMethod.toUpperCase()} · D/${String(safeDay).padStart(
-          2,
-          '0'
-        )}) de ${formatBRL(parsed, privacyMode)} categorizada em "${
-          result.matchedRowName
-        }" (${MONTH_NAMES_FULL[safeMonth]}), refletida na Grade, Timeline e Auditoria.`
-      );
+  const handleRevokeReal = async (consentId: string) => {
+    setRevokingId(consentId);
+    setActionFeedback(null);
+    try {
+      const result = await revokeOpenFinanceConsent(authToken, consentId);
+      if (result.ok) {
+        onApplySyncedState({
+          accounts: result.accounts,
+          revokedConsents: result.revokedConsents,
+          auditLog: result.auditLog,
+        });
+        setActionFeedback({
+          type: 'ok',
+          text: 'Consentimento revogado no servidor e registrado na trilha LGPD.',
+        });
+      } else {
+        onDisconnectAccount(consentId);
+      }
+    } catch {
+      onDisconnectAccount(consentId);
+    } finally {
+      setRevokingId(null);
+      setConfirmRevokeId(null);
     }
   };
 
@@ -514,7 +426,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20 lg:pb-6">
       {/* Top Open Finance Overview & Slot Meter */}
       <div className="p-5 sm:p-6 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -544,9 +456,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                 <div
                   key={idx}
                   className={`h-1.5 flex-1 rounded-full ${
-                    idx < accounts.length
-                      ? 'bg-[#C9A86A]'
-                      : 'bg-slate-200 dark:bg-white/[0.08]'
+                    idx < accounts.length ? 'bg-[#C9A86A]' : 'bg-slate-200 dark:bg-white/[0.08]'
                   }`}
                 />
               ))}
@@ -575,6 +485,54 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
           </div>
         </div>
 
+        {/* Backend Provider Readiness Status Banner (Zero Fake Data) */}
+        <div
+          className={`p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+            backendStatus?.configured
+              ? 'bg-emerald-50 dark:bg-emerald-950/25 border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-200'
+              : 'bg-amber-50 dark:bg-amber-950/25 border-amber-200 dark:border-amber-500/30 text-amber-900 dark:text-amber-200'
+          }`}
+        >
+          <div className="space-y-1 min-w-0">
+            <div className="font-semibold flex items-center gap-2">
+              {backendStatus?.configured ? (
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <ShieldAlert className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              )}
+              <span>
+                {loadingStatus
+                  ? 'Verificando provedor Open Finance no backend...'
+                  : backendStatus?.configured
+                  ? `Provedor ativo: ${backendStatus.providerLabel}`
+                  : 'Aguardando configuração do provedor/credenciais Open Finance no backend'}
+              </span>
+            </div>
+            {backendStatus && (
+              <div className="text-[11px] opacity-90 space-y-0.5">
+                {!backendStatus.configured && (
+                  <div>
+                    Variáveis de servidor necessárias:{' '}
+                    <span className="font-mono">{backendStatus.missingEnvVars.join(', ')}</span>
+                  </div>
+                )}
+                <div className="truncate">
+                  Callback OAuth oficial:{' '}
+                  <span className="font-mono">{backendStatus.callbackUrl}</span>
+                </div>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={loadStatus}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-white/80 dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shrink-0"
+          >
+            <RefreshCw className={`h-3 w-3 ${loadingStatus ? 'animate-spin' : ''}`} />
+            <span>Atualizar status</span>
+          </button>
+        </div>
+
         {/* Section Filter Tabs */}
         <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] flex flex-wrap items-center justify-between gap-3">
           <div className="inline-flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08]">
@@ -582,7 +540,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
               [
                 { id: 'all', label: t.openFinance.tabAll },
                 { id: 'consents', label: `${t.openFinance.tabConsents} (${accounts.length}/5)` },
-                { id: 'simulator', label: t.openFinance.tabSimulator },
+                { id: 'rules', label: 'Regras de Auto-Categorização' },
                 { id: 'audit', label: `${t.openFinance.tabAudit} (${auditLog.length})` },
               ] as const
             ).map((tab) => (
@@ -602,7 +560,9 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
           </div>
 
           <div className="flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-            <span>Ativas: {accounts.filter((a) => evaluateAccountHealth(a).effectiveStatus === 'active').length}</span>
+            <span>
+              Ativas: {accounts.filter((a) => evaluateAccountHealth(a).effectiveStatus === 'active').length}
+            </span>
             <span>·</span>
             <span>Pausadas: {accounts.filter((a) => a.status === 'paused').length}</span>
             <span>·</span>
@@ -611,14 +571,27 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
         </div>
       </div>
 
+      {actionFeedback && (
+        <div
+          className={`p-3.5 rounded-xl border text-xs flex items-center gap-2 ${
+            actionFeedback.type === 'ok'
+              ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300'
+              : actionFeedback.type === 'warn'
+              ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-300'
+              : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-300'
+          }`}
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>{actionFeedback.text}</span>
+        </div>
+      )}
+
       {/* Attention Banner */}
       {attentionAccounts.length > 0 && (
         <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/25 border border-amber-300 dark:border-amber-500/40 space-y-2">
           <div className="flex items-center gap-2 text-xs font-semibold text-amber-900 dark:text-amber-200">
             <ShieldAlert className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-            <span>
-              {attentionAccounts.length} consentimento(s) Open Finance requerem ação
-            </span>
+            <span>{attentionAccounts.length} consentimento(s) Open Finance requerem ação</span>
           </div>
           <div className="space-y-1.5">
             {attentionAccounts.map((acc) => {
@@ -633,11 +606,11 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => handleRenew(acc.id)}
+                    onClick={handleOpenWizard}
                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[11px] font-semibold bg-amber-600 text-white hover:bg-amber-500"
                   >
                     <ExternalLink className="h-3 w-3" />
-                    <span>{health.actionLabel || 'Renovar consentimento'}</span>
+                    <span>{health.actionLabel || 'Autorizar no Banco'}</span>
                   </button>
                 </div>
               );
@@ -658,7 +631,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                 Nenhuma conta conectada ao Open Finance (0 / {MAX_BANK_ACCOUNTS})
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-lg mx-auto">
-                Conecte até 5 instituições financeiras com consentimento explícito OAuth 2.0 + PKCE para acompanhar saldos, faturas e lançar transações automaticamente na Grade Mensal.
+                Selecione entre mais de 40 bancos e instituições do Brasil para iniciar o consentimento oficial OAuth 2.0 / FAPI. Nenhuma senha bancária ou dado fictício é gerado.
               </p>
               <button
                 type="button"
@@ -666,7 +639,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] hover:opacity-90"
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>+ Conectar via Open Finance</span>
+                <span>+ Conectar Instituição Real</span>
               </button>
             </div>
           ) : (
@@ -681,7 +654,8 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                     key={acc.id}
                     className={`p-5 rounded-xl bg-white dark:bg-[#111827] border flex flex-col justify-between gap-4 ${
                       health.effectiveStatus === 'consent_expired' ||
-                      health.effectiveStatus === 'sync_error'
+                      health.effectiveStatus === 'sync_error' ||
+                      health.effectiveStatus === 'pending_bank_confirmation'
                         ? 'border-amber-400/70 dark:border-amber-500/50'
                         : 'border-slate-200 dark:border-white/[0.08]'
                     }`}
@@ -712,7 +686,6 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                         </span>
                       </div>
 
-                      {/* Financial Snapshot */}
                       <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06]">
                         <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
                           <span>{isCreditCard ? 'Fatura Atual' : 'Saldo em Conta'}</span>
@@ -733,10 +706,9 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                         </div>
                       </div>
 
-                      {/* Consent Details: Scopes & Dates */}
                       <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300">
                         <div>
-                          <span className="text-slate-500 dark:text-slate-400">Escopos autorizados: </span>
+                          <span className="text-slate-500 dark:text-slate-400">Escopos: </span>
                           <span className="font-medium">
                             {acc.consentScope.map((s) => SCOPE_LABELS[s] || s).join(' · ')}
                           </span>
@@ -746,13 +718,11 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                           <span>Expira: {acc.consentExpiresAt}</span>
                         </div>
                         <div className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                          Última sincronização: {formatSafeDateTime(acc.lastSync)}
+                          Última sinc.: {formatSafeDateTime(acc.lastSync)}
                         </div>
                       </div>
 
-                      {(health.effectiveStatus === 'consent_expired' ||
-                        health.effectiveStatus === 'sync_error' ||
-                        health.expiringSoon) && (
+                      {health.needsAction && (
                         <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-500/30 text-[11px] text-amber-800 dark:text-amber-300 flex items-start gap-2">
                           <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                           <span>{health.userMessage}</span>
@@ -760,22 +730,19 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                       )}
                     </div>
 
-                    {/* Quick Actions */}
                     {confirmingRevoke ? (
                       <div className="pt-3 border-t border-red-200 dark:border-red-500/30 space-y-2">
                         <div className="text-[11px] text-red-600 dark:text-red-400 font-medium">
-                          Revogar consentimento e destruir token PKCE de {acc.institution}?
+                          Revogar consentimento de {acc.institution} na API oficial e no cofre?
                         </div>
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => {
-                              onDisconnectAccount(acc.id);
-                              setConfirmRevokeId(null);
-                            }}
+                            disabled={revokingId === acc.id}
+                            onClick={() => handleRevokeReal(acc.id)}
                             className="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-500"
                           >
-                            Confirmar revogação
+                            {revokingId === acc.id ? 'Revogando...' : 'Confirmar revogação'}
                           </button>
                           <button
                             type="button"
@@ -790,8 +757,9 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                       <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] grid grid-cols-2 gap-2">
                         <button
                           type="button"
-                          onClick={() => handleSync(acc.id)}
+                          onClick={() => handleSyncReal(acc.id)}
                           disabled={
+                            syncingId === acc.id ||
                             health.effectiveStatus === 'paused' ||
                             health.effectiveStatus === 'consent_expired'
                           }
@@ -799,15 +767,6 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                         >
                           <RefreshCw className={`h-3 w-3 ${syncingId === acc.id ? 'animate-spin' : ''}`} />
                           <span>Sincronizar agora</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => handleRenew(acc.id)}
-                          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-[#E5C88F] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors"
-                        >
-                          <ExternalLink className={`h-3 w-3 ${renewingId === acc.id ? 'animate-pulse' : ''}`} />
-                          <span>Renovar consentimento</span>
                         </button>
 
                         <button
@@ -831,7 +790,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                         <button
                           type="button"
                           onClick={() => setConfirmRevokeId(acc.id)}
-                          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/25 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          className="col-span-2 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/25 hover:bg-red-50 dark:hover:bg-red-950/30"
                         >
                           <Unplug className="h-3 w-3" />
                           <span>Revogar consentimento</span>
@@ -844,384 +803,169 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
             </div>
           )}
 
-          {/* Pending / Revoked Consents History */}
-          {(wizardOpen || revokedConsents.length > 0) && (
+          {revokedConsents.length > 0 && (
             <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                  Consentimentos Pendentes & Revogados
+                  Histórico de Consentimentos Revogados (LGPD)
                 </span>
                 <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
                   {revokedConsents.length} revogado(s)
                 </span>
               </div>
-
-              {wizardOpen && !pkceAuthorized && (
-                <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-500/30 text-xs flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <strong className="text-amber-900 dark:text-amber-200">
-                      Pendente · {instName} ({instType})
-                    </strong>
-                    <div className="text-[11px] text-amber-800 dark:text-amber-300">
-                      Aguardando conclusão da etapa OAuth 2.0 + PKCE ({pkceHandshakeChallenge}).
+              <div className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+                {revokedConsents.slice(0, 5).map((rev) => (
+                  <div
+                    key={`${rev.id}-${rev.revokedAt ?? ''}`}
+                    className="py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium text-slate-800 dark:text-slate-200">
+                        {rev.institution} · <span className="text-slate-500">{rev.type}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Escopos encerrados: {rev.consentScope.map((s) => SCOPE_LABELS[s] || s).join(', ')}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
+                        {rev.revokedAt ? formatSafeDateTime(rev.revokedAt) : '—'}
+                      </span>
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/25">
+                        Revogado
+                      </span>
                     </div>
                   </div>
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
-                    Pendente
-                  </span>
-                </div>
-              )}
-
-              {revokedConsents.length > 0 && (
-                <div className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                  {revokedConsents.slice(0, 5).map((rev) => (
-                    <div
-                      key={`${rev.id}-${rev.revokedAt ?? ''}`}
-                      className="py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs"
-                    >
-                      <div className="min-w-0">
-                        <div className="font-medium text-slate-800 dark:text-slate-200">
-                          {rev.institution} · <span className="text-slate-500">{rev.type}</span>
-                        </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                          Escopos encerrados: {rev.consentScope.map((s) => SCOPE_LABELS[s] || s).join(', ')}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
-                          {rev.revokedAt ? formatSafeDateTime(rev.revokedAt) : '—'}
-                        </span>
-                        <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/25">
-                          Revogado
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                ))}
+              </div>
             </div>
           )}
         </div>
       )}
 
-      {/* 2. SIMULADOR DE MOVIMENTAÇÕES EM TEMPO REAL + REGRAS DE AUTO-CATEGORIZAÇÃO */}
-      {(sectionView === 'all' || sectionView === 'simulator') && (
+      {/* 2. REGRAS DE AUTO-CATEGORIZAÇÃO & DIRETÓRIO DE INSTITUIÇÕES */}
+      {(sectionView === 'all' || sectionView === 'rules') && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-7 p-6 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
+          <div className="lg:col-span-6 p-6 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
             <div>
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                <Zap className="h-4 w-4 text-[#C9A86A]" />
-                Simular Nova Movimentação Bancária (Tempo Real)
+                <Sparkles className="h-4 w-4 text-[#C9A86A]" />
+                Regras de Auto-Categorização (Grade Mensal)
               </h3>
               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                Injete Pix recebido, compra no cartão, débito em conta ou boleto/transferência com auto-categorização direta na Grade Mensal, Timeline, Alertas e Auditoria.
+                Mapeia descrições reais sincronizadas via Open Finance para as linhas da sua Grade Mensal.
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-1.5">
-              {QUICK_MOVEMENT_PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => {
-                    setSimDesc(preset.description);
-                    setSimMerchant(preset.merchant);
-                    setSimPaymentMethod(preset.paymentMethod);
-                    setSimNature(preset.entryNature);
-                    setSimType(preset.type);
-                    setSimAmount(preset.amount);
-                    setSimDay(preset.day);
-                    setSimInstallmentCurrent(preset.installmentCurrent);
-                    setSimInstallmentTotal(preset.installmentTotal);
-                  }}
-                  className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-slate-100 dark:bg-[#1A2234] text-slate-700 dark:text-slate-300 hover:bg-[#C9A86A]/20 hover:text-[#8C6A2E] dark:hover:text-[#E5C88F] transition-colors"
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-
-            <form onSubmit={handleRunSimulation} className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Conta Conectada
-                  </label>
-                  <select
-                    value={simAccountId}
-                    onChange={(e) => setSimAccountId(e.target.value)}
-                    disabled={accounts.length === 0}
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  >
-                    {accounts.length === 0 && <option value="">Conecte uma conta primeiro</option>}
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.institution} ({a.type})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Modalidade
-                  </label>
-                  <select
-                    value={simPaymentMethod}
-                    onChange={(e) => setSimPaymentMethod(e.target.value as PaymentMethod)}
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  >
-                    <option value="pix">Pix</option>
-                    <option value="credit">Compra no Cartão (Crédito)</option>
-                    <option value="debit">Débito em Conta</option>
-                    <option value="transfer">Boleto / Transferência</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Fluxo & Conciliação
-                  </label>
-                  <select
-                    value={`${simType}:${simNature}`}
-                    onChange={(e) => {
-                      const [nextType, nextNature] = e.target.value.split(':') as [
-                        'inflow' | 'outflow',
-                        EntryNature
-                      ];
-                      setSimType(nextType);
-                      setSimNature(nextNature);
-                    }}
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  >
-                    <option value="outflow:standard">Saída / Despesa Real</option>
-                    <option value="inflow:standard">Entrada / Recebimento</option>
-                    <option value="outflow:invoice_payment">Pagamento de Fatura (Anti-Duplicidade)</option>
-                    <option value="outflow:internal_transfer">Transferência Interna (Anti-Duplicidade)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Estabelecimento / Origem
-                  </label>
-                  <input
-                    type="text"
-                    value={simMerchant}
-                    onChange={(e) => setSimMerchant(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Descrição Bancária (dispara auto-categorização)
-                  </label>
-                  <input
-                    type="text"
-                    value={simDesc}
-                    onChange={(e) => setSimDesc(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Valor (R$)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={simAmount}
-                    onChange={(e) => setSimAmount(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 rounded-lg text-xs font-mono tabular-nums bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Dia (D/XX)
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="31"
-                    value={simDay}
-                    onChange={(e) => setSimDay(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 rounded-lg text-xs font-mono tabular-nums bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    Mês ({settings.activeYear})
-                  </label>
-                  <select
-                    value={simMonth}
-                    onChange={(e) => setSimMonth(Number(e.target.value))}
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  >
-                    {MONTH_NAMES_FULL.map((m, idx) => (
-                      <option key={m} value={idx}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="text-slate-500 dark:text-slate-400">
-                  Destino automático na Grade Mensal:
-                </span>
-                <span className="font-semibold text-[#8C6A2E] dark:text-[#E5C88F] font-mono">
-                  {matchedRulePreview.rowName}
-                  {matchedRulePreview.ruleKeyword ? ` (regra: "${matchedRulePreview.ruleKeyword}")` : ' (padrão)'}
-                </span>
-              </div>
-
+            <form onSubmit={handleAddInlineRule} className="grid grid-cols-12 gap-2">
+              <input
+                type="text"
+                value={newRuleKeyword}
+                onChange={(e) => setNewRuleKeyword(e.target.value)}
+                placeholder="Palavra-chave (ex: mercado, uber)"
+                className="col-span-5 px-2.5 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1]"
+              />
+              <select
+                value={newRuleRowId}
+                onChange={(e) => setNewRuleRowId(e.target.value)}
+                className="col-span-5 px-2 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1]"
+              >
+                {visibleRows.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
               <button
                 type="submit"
-                disabled={accounts.length === 0}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] hover:opacity-90 disabled:opacity-40"
+                className="col-span-2 inline-flex items-center justify-center rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16]"
+                title="Adicionar regra"
               >
-                <Zap className="h-3.5 w-3.5" />
-                <span>Simular Nova Movimentação Bancária</span>
+                <Plus className="h-3.5 w-3.5" />
               </button>
             </form>
 
-            {simFeedback && (
-              <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/30 text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <span>{simFeedback}</span>
-              </div>
-            )}
+            <div className="divide-y divide-slate-100 dark:divide-white/[0.05] max-h-64 overflow-y-auto border border-slate-100 dark:border-white/[0.06] rounded-lg">
+              {rules.map((rule) => {
+                const targetRow = rows.find((r) => r.id === rule.targetRowId);
+                return (
+                  <div
+                    key={rule.id}
+                    className="px-3 py-2 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0 flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={rule.enabled}
+                        onChange={() => onToggleRule(rule.id)}
+                        className="accent-[#C9A86A]"
+                      />
+                      <span className="font-mono text-slate-800 dark:text-slate-200 truncate">
+                        "{rule.keyword}"
+                      </span>
+                      <span className="text-slate-400">→</span>
+                      <span className="font-medium text-[#8C6A2E] dark:text-[#E5C88F] truncate">
+                        {targetRow?.name ?? rule.targetRowId}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteRule(rule.id)}
+                      className="p-1 text-slate-400 hover:text-red-500"
+                      title="Remover regra"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Auto-Categorization Rules Panel */}
-          <div className="lg:col-span-5 p-6 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] flex flex-col justify-between gap-4">
-            <div className="space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-[#C9A86A]" />
-                  Regras de Auto-Categorização (Grade Mensal)
-                </h3>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Mapeia palavras-chave dos extratos diretamente para linhas como Pizzaria, 2PB, Vale, Mercado, Combustível/Moto, Cartão SA, Cartão MP, Energia e Gás.
-                </p>
-              </div>
-
-              <form onSubmit={handleAddInlineRule} className="grid grid-cols-12 gap-2">
-                <input
-                  type="text"
-                  value={newRuleKeyword}
-                  onChange={(e) => setNewRuleKeyword(e.target.value)}
-                  placeholder="Palavra-chave (ex: uber)"
-                  className="col-span-5 px-2.5 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1]"
-                />
-                <select
-                  value={newRuleRowId}
-                  onChange={(e) => setNewRuleRowId(e.target.value)}
-                  className="col-span-5 px-2 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1]"
-                >
-                  {visibleRows.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="submit"
-                  className="col-span-2 inline-flex items-center justify-center rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16]"
-                  title="Adicionar regra"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </button>
-              </form>
-
-              <div className="divide-y divide-slate-100 dark:divide-white/[0.05] max-h-64 overflow-y-auto border border-slate-100 dark:border-white/[0.06] rounded-lg">
-                {rules.map((rule) => {
-                  const targetRow = rows.find((r) => r.id === rule.targetRowId);
-                  return (
-                    <div
-                      key={rule.id}
-                      className="px-3 py-2 flex items-center justify-between gap-2 text-xs"
-                    >
-                      <div className="min-w-0 flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={rule.enabled}
-                          onChange={() => onToggleRule(rule.id)}
-                          className="accent-[#C9A86A]"
-                        />
-                        <span className="font-mono text-slate-800 dark:text-slate-200 truncate">
-                          "{rule.keyword}"
-                        </span>
-                        <span className="text-slate-400">→</span>
-                        <span className="font-medium text-[#8C6A2E] dark:text-[#E5C88F] truncate">
-                          {targetRow?.name ?? rule.targetRowId}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteRule(rule.id)}
-                        className="p-1 text-slate-400 hover:text-red-500"
-                        title="Remover regra"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+          <div className="lg:col-span-6 p-6 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                <Landmark className="h-4 w-4 text-[#C9A86A]" />
+                Diretório Oficial de Instituições ({BRAZILIAN_BANKS.length})
+              </h3>
+              <button
+                type="button"
+                disabled={isAtLimit}
+                onClick={handleOpenWizard}
+                className="text-xs font-semibold text-[#A68342] dark:text-[#E5C88F] hover:underline disabled:opacity-40"
+              >
+                Conectar banco →
+              </button>
             </div>
-
-            {accounts.length > 0 && (
-              <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] space-y-2">
-                <div className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
-                  Diagnóstico rápido de estados de consentimento:
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onSetAccountStatus(
-                        simAccountId || accounts[0].id,
-                        'consent_expired',
-                        'Prazo do consentimento expirado. Renove diretamente no ambiente oficial do banco.'
-                      )
-                    }
-                    className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 hover:bg-amber-500/20"
-                  >
-                    Simular Expirado
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onSetAccountStatus(
-                        simAccountId || accounts[0].id,
-                        'sync_error',
-                        'Instituição indisponível temporariamente no conector Open Finance.'
-                      )
-                    }
-                    className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-red-500/10 text-red-700 dark:text-red-300 border border-red-500/30 hover:bg-red-500/20"
-                  >
-                    Simular Erro Conector
-                  </button>
-                </div>
-              </div>
-            )}
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Bancos tradicionais, bancos digitais, cooperativas e instituições de pagamento participantes do ecossistema brasileiro.
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-64 overflow-y-auto pr-1">
+              {BRAZILIAN_BANKS.map((bank) => (
+                <button
+                  key={bank.id}
+                  type="button"
+                  disabled={isAtLimit}
+                  onClick={() => {
+                    setSelectedBankId(bank.id);
+                    handleOpenWizard();
+                  }}
+                  className="p-2.5 rounded-lg bg-slate-50 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.07] hover:border-[#C9A86A]/50 text-left transition-colors disabled:opacity-40"
+                >
+                  <div className="text-[11px] font-semibold text-slate-900 dark:text-slate-100 truncate">
+                    {bank.shortName}
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                    COMPE {bank.code} · {bank.category}
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      {/* 3. TRILHA DE AUDITORIA (FILTRÁVEL) & TRANSPARÊNCIA DE SEGURANÇA */}
+      {/* 3. TRILHA DE AUDITORIA & CONFORMIDADE LGPD */}
       {(sectionView === 'all' || sectionView === 'audit') && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <div className="lg:col-span-8 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
@@ -1307,11 +1051,6 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                           </span>
                         </div>
                         <div className="text-slate-500 dark:text-slate-400">{ev.detail}</div>
-                        {ev.scope && (
-                          <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 truncate">
-                            Escopo: {ev.scope}
-                          </div>
-                        )}
                       </div>
                       <div className="text-right shrink-0 font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
                         <div>{ev.securityProtocol}</div>
@@ -1324,12 +1063,11 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
             </div>
           </div>
 
-          {/* Security & Privacy Transparency Block */}
           <div className="lg:col-span-4 p-6 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
             <div className="flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-emerald-500" />
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Arquitetura & Transparência LGPD
+                Arquitetura & Conformidade LGPD
               </h3>
             </div>
 
@@ -1339,25 +1077,15 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                   OAuth 2.0 + PKCE (FAPI Brasil)
                 </div>
                 <p className="mt-1 text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Redirecionamento criptografado com desafio PKCE efêmero, transporte TLS 1.3 e tokens AES-256 restritos ao escopo autorizado.
+                  Consentimento criado exclusivamente no servidor backend com state anti-CSRF e redirecionamento oficial ao banco.
                 </p>
               </div>
-
               <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
                 <div className="font-semibold text-slate-900 dark:text-slate-100">
                   Zero Senhas Bancárias ou Dados de Cartão
                 </div>
                 <p className="mt-1 text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Jamais pedimos ou armazenamos senha bancária, token SMS/MFA, PIN transacional, número completo de cartão, CVV ou validade.
-                </p>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
-                <div className="font-semibold text-slate-900 dark:text-slate-100">
-                  Revogação Imediata & Anti-Duplicidade
-                </div>
-                <p className="mt-1 text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Você pode pausar, renovar ou revogar qualquer consentimento a qualquer momento (RFC 7009), sem duplicar pagamentos de fatura ou transferências internas.
+                  Jamais solicitamos ou armazenamos senha bancária, token SMS/MFA, PIN transacional, número completo de cartão, CVV ou validade.
                 </p>
               </div>
             </div>
@@ -1365,7 +1093,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
         </div>
       )}
 
-      {/* 4-STEP GUIDED CONNECTION WIZARD MODAL */}
+      {/* 3-STEP REAL CONSENT WIZARD MODAL */}
       {wizardOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
@@ -1380,177 +1108,94 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
             <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
               <div>
                 <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-                  Conectar Instituição via Open Finance
+                  Conectar Instituição via Open Finance Brasil
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Etapa {wizardStep} de 4 · Slot {accounts.length + 1} de {MAX_BANK_ACCOUNTS}
+                  Etapa {wizardStep} de 3 · Slot {accounts.length + 1} de {MAX_BANK_ACCOUNTS}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setWizardOpen(false)}
                 className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
-                aria-label="Fechar assistente"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            {/* Progress indicator */}
-            <div className="px-6 pt-4 grid grid-cols-4 gap-2">
-              {[1, 2, 3, 4].map((s) => (
-                <div
-                  key={s}
-                  className={`h-1.5 rounded-full transition-colors ${
-                    s <= wizardStep ? 'bg-[#C9A86A]' : 'bg-slate-200 dark:bg-white/[0.08]'
-                  }`}
-                />
-              ))}
-            </div>
-
-            <form onSubmit={handleCompleteWizard} className="p-6 space-y-4">
-              {/* STEP 1: INSTITUTION & ACCOUNT TYPE */}
+            <div className="p-6 space-y-4">
               {wizardStep === 1 && (
                 <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                        Instituição Financeira
-                      </label>
-                      <select
-                        value={instName}
-                        onChange={(e) => setInstName(e.target.value)}
-                        className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                      >
-                        {INSTITUTION_PRESETS.map((p) => (
-                          <option key={p.code} value={p.name}>
-                            {p.name} (Banco {p.code})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                        Provedor Oficial (FAPI)
-                      </label>
-                      <select
-                        value={connectorProvider}
-                        onChange={(e) => setConnectorProvider(e.target.value as ConnectorProvider)}
-                        className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                      >
-                        {CONNECTOR_PROVIDERS.map((prov) => (
-                          <option key={prov} value={prov}>
-                            {prov}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                        Tipo de Conta
-                      </label>
-                      <select
-                        value={instType}
-                        onChange={(e) => setInstType(e.target.value as AccountType)}
-                        className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                      >
-                        <option value="Corrente">Conta Corrente</option>
-                        <option value="Digital">Conta Digital</option>
-                        <option value="Cartão de Crédito">Cartão de Crédito</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                        Saldo / Fatura Atual (R$)
-                      </label>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                      Buscar Instituição Financeira (Nome, Código COMPE ou ISPB)
+                    </label>
+                    <div className="relative">
+                      <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                       <input
-                        type="number"
-                        step="0.01"
-                        value={initialBalance}
-                        onChange={(e) => setInitialBalance(e.target.value)}
-                        className="w-full px-3 py-2.5 rounded-lg text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                        type="text"
+                        value={bankSearch}
+                        onChange={(e) => setBankSearch(e.target.value)}
+                        placeholder="Ex: Nubank, Itaú, 260, Sicredi, BTG..."
+                        className="w-full pl-8 pr-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1]"
                       />
                     </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {BANK_CATEGORIES.map((cat) => (
+                        <button
+                          key={cat}
+                          type="button"
+                          onClick={() => setBankCategory(cat)}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-medium ${
+                            bankCategory === cat
+                              ? 'bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16]'
+                              : 'bg-slate-100 dark:bg-[#1A2234] text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          {cat === 'all' ? 'Todos' : cat}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
-                  {instType === 'Cartão de Crédito' && (
-                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] space-y-3">
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                        <CreditCard className="h-3.5 w-3.5 text-[#C9A86A]" />
-                        <span>Parâmetros da Fatura (Sem número do cartão, CVV ou validade)</span>
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                        <div className="col-span-2">
-                          <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                            Limite Total (R$)
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={creditLimit}
-                            onChange={(e) => setCreditLimit(e.target.value)}
-                            className="w-full px-2.5 py-2 rounded-lg text-xs font-mono tabular-nums bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1]"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                            Fechamento
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="31"
-                            value={closingDay}
-                            onChange={(e) => setClosingDay(e.target.value)}
-                            className="w-full px-2.5 py-2 rounded-lg text-xs font-mono bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1]"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                            Vencimento
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="31"
-                            value={dueDay}
-                            onChange={(e) => setDueDay(e.target.value)}
-                            className="w-full px-2.5 py-2 rounded-lg text-xs font-mono bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1]"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                          Estado da Fatura
-                        </label>
-                        <select
-                          value={invoiceState}
-                          onChange={(e) => setInvoiceState(e.target.value as InvoiceState)}
-                          className="w-full px-2.5 py-2 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1]"
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto p-1 border border-slate-200 dark:border-white/[0.08] rounded-xl bg-slate-50 dark:bg-[#0D1320]">
+                    {filteredBanks.map((bank) => {
+                      const active = bank.id === selectedBankId;
+                      return (
+                        <button
+                          key={bank.id}
+                          type="button"
+                          onClick={() => setSelectedBankId(bank.id)}
+                          className={`p-2.5 rounded-lg border text-left transition-colors ${
+                            active
+                              ? 'bg-white dark:bg-[#1A2234] border-[#C9A86A] ring-1 ring-[#C9A86A]/40'
+                              : 'bg-white/70 dark:bg-[#111827] border-slate-200/70 dark:border-white/[0.06]'
+                          }`}
                         >
-                          <option value="open">Aberta</option>
-                          <option value="closed">Fechada</option>
-                          <option value="paid">Paga</option>
-                        </select>
-                      </div>
-                    </div>
-                  )}
+                          <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                            {bank.name}
+                          </div>
+                          <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                            Cód. {bank.code} · {bank.category}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
 
                   <div>
                     <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                      Apelido da Conta
+                      Tipo de Vínculo
                     </label>
-                    <input
-                      type="text"
-                      value={nickname}
-                      onChange={(e) => setNickname(e.target.value)}
-                      required
-                      className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                    />
+                    <select
+                      value={instType}
+                      onChange={(e) => setInstType(e.target.value as AccountType)}
+                      className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1]"
+                    >
+                      <option value="Corrente">Conta Corrente</option>
+                      <option value="Digital">Conta Digital</option>
+                      <option value="Cartão de Crédito">Cartão de Crédito</option>
+                    </select>
                   </div>
 
                   <div className="flex justify-end pt-2">
@@ -1566,12 +1211,11 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                 </>
               )}
 
-              {/* STEP 2: EXPLICIT SCOPES & VALIDITY */}
               {wizardStep === 2 && (
                 <>
                   <div className="space-y-2">
                     <div className="text-xs font-semibold text-slate-900 dark:text-white">
-                      Escopos Somente Leitura (LGPD)
+                      Escopos Somente Leitura (LGPD) — {selectedBank.name}
                     </div>
                     <div className="space-y-2">
                       {SCOPE_OPTIONS.map((sc) => {
@@ -1579,7 +1223,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                         return (
                           <label
                             key={sc.code}
-                            className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                            className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer ${
                               checked
                                 ? 'bg-slate-50 dark:bg-[#0D1320] border-[#C9A86A]/50'
                                 : 'bg-white dark:bg-[#111827] border-slate-200 dark:border-white/[0.08]'
@@ -1593,10 +1237,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                             />
                             <div className="text-xs">
                               <div className="font-semibold text-slate-900 dark:text-slate-100">
-                                {sc.label}{' '}
-                                <span className="font-mono text-[10px] text-slate-400">
-                                  ({sc.code})
-                                </span>
+                                {sc.label}
                               </div>
                               <div className="text-[11px] text-slate-500 dark:text-slate-400">
                                 {sc.desc}
@@ -1610,16 +1251,16 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
 
                   <div>
                     <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                      Prazo de Validade do Consentimento
+                      Prazo do Consentimento
                     </label>
                     <select
                       value={consentTermMonths}
                       onChange={(e) => setConsentTermMonths(Number(e.target.value))}
-                      className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                      className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1]"
                     >
                       <option value={3}>3 meses (90 dias)</option>
                       <option value={6}>6 meses (180 dias)</option>
-                      <option value={12}>12 meses (365 dias · Padrão BACEN)</option>
+                      <option value={12}>12 meses (365 dias · Máximo BACEN)</option>
                     </select>
                   </div>
 
@@ -1627,7 +1268,7 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                     <button
                       type="button"
                       onClick={() => setWizardStep(1)}
-                      className="px-3 py-2 rounded-lg text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
+                      className="px-3 py-2 rounded-lg text-xs text-slate-500"
                     >
                       Voltar
                     </button>
@@ -1636,168 +1277,74 @@ export const OpenFinanceView: React.FC<OpenFinanceViewProps> = ({
                       onClick={() => setWizardStep(3)}
                       className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16]"
                     >
-                      <span>Ir para Redirecionamento PKCE</span>
+                      <span>Revisar & Autorizar no Banco</span>
                       <ArrowRight className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </>
               )}
 
-              {/* STEP 3: OAUTH 2.0 + PKCE SECURE HANDSHAKE (ZERO BANK PASSWORDS) */}
               {wizardStep === 3 && (
                 <>
-                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] space-y-3 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
-                        <Lock className="h-4 w-4 text-emerald-500" />
-                        <span>Redirecionamento Seguro OAuth 2.0 + PKCE</span>
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[11px] font-medium border ${
-                          pkceAuthorized
-                            ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
-                            : 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30'
-                        }`}
-                      >
-                        {pkceAuthorized ? 'Autorizado (PKCE)' : 'Consentimento Pendente'}
-                      </span>
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] space-y-2.5 text-xs">
+                    <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
+                      <Lock className="h-4 w-4 text-emerald-500" />
+                      <span>Autorização Externa OAuth 2.0 / FAPI</span>
                     </div>
-
-                    <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
-                      O consentimento para <strong>{instName}</strong> é assinado fora deste app em ambiente oficial via{' '}
-                      <span className="font-mono">TLS 1.3</span> e tokenizado em <span className="font-mono">AES-256</span>. Nenhuma senha bancária, PIN, código SMS ou CVV é solicitado aqui.
+                    <p className="text-slate-500 dark:text-slate-400">
+                      Você será direcionado ao ambiente oficial de <strong>{selectedBank.name}</strong> (Código {selectedBank.code}). Nenhuma senha ou dado de cartão é solicitado neste app.
                     </p>
-
-                    <div className="p-2.5 rounded-lg bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] font-mono text-[11px] text-slate-600 dark:text-slate-300 space-y-1">
-                      <div>Provider: {connectorProvider}</div>
-                      <div>Challenge PKCE: {pkceHandshakeChallenge}</div>
+                    <div className="p-2.5 rounded-lg bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] font-mono text-[11px] space-y-1">
+                      <div>Provedor Backend: {backendStatus?.providerLabel ?? 'Não configurado'}</div>
                       <div>Escopos: {selectedScopes.join(' · ')}</div>
+                      <div>Validade: {consentTermMonths} meses</div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setPkceAuthorized(true)}
-                      disabled={pkceAuthorized}
-                      className={`w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold transition-colors ${
-                        pkceAuthorized
-                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 cursor-default'
-                          : 'bg-slate-900 dark:bg-[#1A2234] text-white dark:text-[#E5C88F] border border-transparent dark:border-[#C9A86A]/40 hover:opacity-90'
-                      }`}
-                    >
-                      {pkceAuthorized ? (
-                        <>
-                          <CheckCircle2 className="h-4 w-4" />
-                          <span>Token OAuth 2.0 + PKCE Confirmado</span>
-                        </>
-                      ) : (
-                        <>
-                          <ExternalLink className="h-4 w-4" />
-                          <span>Autorizar no Banco Oficial (Simular Handshake PKCE)</span>
-                        </>
-                      )}
-                    </button>
+                    {!backendStatus?.configured && (
+                      <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-200">
+                        <strong>Aguardando configuração do provedor/credenciais Open Finance no backend.</strong>{' '}
+                        Configure as credenciais no servidor antes de autorizar contas reais.
+                      </div>
+                    )}
+
+                    {pendingAuthUrl && (
+                      <a
+                        href={pendingAuthUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span>Abrir Página Oficial de Autorização do Banco</span>
+                      </a>
+                    )}
                   </div>
 
                   <div className="flex items-center justify-between pt-2">
                     <button
                       type="button"
                       onClick={() => setWizardStep(2)}
-                      className="px-3 py-2 rounded-lg text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
+                      className="px-3 py-2 rounded-lg text-xs text-slate-500"
                     >
                       Voltar
                     </button>
                     <button
                       type="button"
-                      disabled={!pkceAuthorized}
-                      onClick={() => setWizardStep(4)}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] disabled:opacity-40"
+                      disabled={initiatingConsent || !backendStatus?.configured}
+                      onClick={handleStartOfficialOAuth}
+                      className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] disabled:opacity-40"
                     >
-                      <span>Mapear Auto-Categorização</span>
-                      <ArrowRight className="h-3.5 w-3.5" />
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      <span>
+                        {initiatingConsent
+                          ? 'Iniciando consentimento...'
+                          : 'Autorizar no Banco Oficial'}
+                      </span>
                     </button>
                   </div>
                 </>
               )}
-
-              {/* STEP 4: AUTO-CATEGORIZATION MAPPING TO GRADE MENSAL */}
-              {wizardStep === 4 && (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                      Categoria padrão na Grade Mensal (para transações sem palavra-chave)
-                    </label>
-                    <select
-                      value={defaultRowId}
-                      onChange={(e) => setDefaultRowId(e.target.value)}
-                      className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                    >
-                      {visibleRows.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name} ({r.block === 'income' ? 'Receita' : r.block === 'fixed' ? 'Fixa' : r.block === 'variable' ? 'Variável' : 'Guardado'})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] space-y-2.5">
-                    <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                      Adicionar Regra Rápida para Grade Mensal ({rules.filter((r) => r.enabled).length} ativas)
-                    </div>
-                    <div className="grid grid-cols-12 gap-2">
-                      <input
-                        type="text"
-                        value={wizardNewKeyword}
-                        onChange={(e) => setWizardNewKeyword(e.target.value)}
-                        placeholder="Ex: pizzaria, 2pb, mercado..."
-                        className="col-span-5 px-2.5 py-2 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1]"
-                      />
-                      <select
-                        value={wizardNewRuleRowId}
-                        onChange={(e) => setWizardNewRuleRowId(e.target.value)}
-                        className="col-span-5 px-2 py-2 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1]"
-                      >
-                        {visibleRows.map((r) => (
-                          <option key={r.id} value={r.id}>
-                            {r.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={handleWizardAddRule}
-                        className="col-span-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#1A2234] text-white dark:text-[#E5C88F] border border-transparent dark:border-[#C9A86A]/40"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/30 text-xs text-emerald-800 dark:text-emerald-300 flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span>
-                      Tudo pronto! Ao concluir, {instName} ocupará o Slot {accounts.length + 1}/{MAX_BANK_ACCOUNTS} com sincronização automática na Grade Mensal e na Timeline.
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setWizardStep(3)}
-                      className="px-3 py-2 rounded-lg text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
-                    >
-                      Voltar
-                    </button>
-                    <button
-                      type="submit"
-                      className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500"
-                    >
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      <span>Concluir Conexão Open Finance</span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </form>
+            </div>
           </div>
         </div>
       )}

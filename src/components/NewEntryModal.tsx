@@ -21,6 +21,7 @@ interface NewEntryModalProps {
   accounts: BankAccount[];
   activeYear: number;
   defaultMonth: number;
+  initialFlowType?: 'income' | 'expense';
   language: AppLanguage;
   onClose: () => void;
   onAddEntry: (entry: Omit<TransactionEntry, 'id' | 'createdAt'>) => void;
@@ -32,6 +33,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   accounts,
   activeYear,
   defaultMonth,
+  initialFlowType,
   language,
   onClose,
   onAddEntry,
@@ -59,13 +61,21 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     setEntryNature('standard');
     setInstallmentCurrent('1');
     setInstallmentTotal('1');
-    if (visibleRows.length > 0 && !visibleRows.some((r) => r.id === rowId)) {
+
+    if (initialFlowType === 'income') {
+      const firstIncome = visibleRows.find((r) => r.block === 'income');
+      if (firstIncome) setRowId(firstIncome.id);
+    } else if (initialFlowType === 'expense') {
+      const firstExpense = visibleRows.find((r) => r.block === 'variable' || r.block === 'fixed');
+      if (firstExpense) setRowId(firstExpense.id);
+    } else if (visibleRows.length > 0 && !visibleRows.some((r) => r.id === rowId)) {
       setRowId(visibleRows[0].id);
     }
+
     if (accountId !== 'manual' && !accounts.some((a) => a.id === accountId)) {
       setAccountId(accounts[0]?.id ?? 'manual');
     }
-  }, [isOpen, defaultMonth, accounts]);
+  }, [isOpen, defaultMonth, accounts, initialFlowType]);
 
   if (!isOpen) return null;
 

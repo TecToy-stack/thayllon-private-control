@@ -11,6 +11,7 @@ import {
   LogOut,
   CheckCircle2,
   AlertCircle,
+  Smartphone,
   X,
 } from 'lucide-react';
 import { AppLanguage, NavTab, UserProfile } from '../types/finance';
@@ -38,6 +39,7 @@ const NAV_ITEMS: { id: NavTab; icon: React.ComponentType<{ className?: string }>
   { id: 'accounts', icon: ShieldCheck },
   { id: 'investments', icon: TrendingUp },
   { id: 'assistant', icon: MessageSquareText },
+  { id: 'downloads', icon: Smartphone },
   { id: 'settings', icon: Settings },
 ];
 

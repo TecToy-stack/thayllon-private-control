@@ -27,20 +27,35 @@ import { computeAlerts, computeMatrixTotals } from './utils/financeEngine';
 import { buildConsentExpirationDate, evaluateAccountHealth } from './utils/openFinance';
 import { generatePrivateBankingAnnualPDF } from './utils/pdfReport';
 import {
+  AutoBackupStatus,
   BackupMeta,
+  createBackupSnapshotAndPersist,
   exportVaultBackupJSON,
+  getAutoBackupStatus,
   hasOperationalDataForBackup,
   loadBackupMeta,
   markBackupCompleted,
   markBackupDirty,
+  runAutoBackupIfDue,
+  shareOrDownloadLatestBackupJSON,
 } from './utils/backup';
 import { clearLocalVaultCache, saveLocalVaultCache } from './utils/localVault';
-import { syncVaultState } from './utils/vaultApi';
+import {
+  refreshVaultFromServer,
+  syncVaultState,
+  uploadServerBackupSnapshot,
+} from './utils/vaultApi';
 import {
   loadStoredLanguage,
   normalizeLanguage,
   saveStoredLanguage,
 } from './utils/i18n';
+import {
+  TableProperties,
+  PlusCircle,
+  Landmark,
+  Settings as SettingsIcon,
+} from 'lucide-react';
 import { OfflineIndicator } from './components/PWAInstallButton';
 import {
   AuthenticatedSessionPayload,
@@ -54,6 +69,7 @@ import { OpenFinanceView } from './components/OpenFinanceView';
 import { AccountsSecurityView } from './components/AccountsSecurityView';
 import { InvestmentSimulatorView } from './components/InvestmentSimulatorView';
 import { AssistantChatView } from './components/AssistantChatView';
+import { DownloadCenterView } from './components/DownloadCenterView';
 import { SettingsView } from './components/SettingsView';
 import { CellDetailDrawer } from './components/CellDetailDrawer';
 import { NewEntryModal } from './components/NewEntryModal';
@@ -173,14 +189,20 @@ export default function App() {
   >('monitoring');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [newEntryModalOpen, setNewEntryModalOpen] = useState(false);
+  const [newEntryFlowType, setNewEntryFlowType] = useState<'income' | 'expense' | undefined>(
+    undefined
+  );
   const [selectedCell, setSelectedCell] = useState<{ rowId: string; month: number } | null>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [backupMeta, setBackupMeta] = useState<BackupMeta>({ lastBackupAt: null, dirty: false });
+  const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null);
   const [backupReminderDismissed, setBackupReminderDismissed] = useState(false);
 
   const syncTimeoutRef = useRef<number | null>(null);
   const skipNextSyncRef = useRef(false);
   const lastBackupDataSigRef = useRef<string>('');
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   // Limpa chave legada v1 para garantir Primeiro Acesso Real limpo
   useEffect(() => {
@@ -285,6 +307,40 @@ export default function App() {
       window.removeEventListener('pagehide', handleBackgroundEvent);
     };
   }, [authSession, state.settings.lockOnBackground, isLocked]);
+
+  // 24-hour Automatic Backup Scheduler (IndexedDB + Authenticated Server Vault)
+  useEffect(() => {
+    if (!authSession) {
+      setAutoBackupStatus(null);
+      return;
+    }
+
+    const executeCheck = async () => {
+      try {
+        const res = await runAutoBackupIfDue(
+          authSession.cpfId,
+          stateRef.current,
+          authSession.profile,
+          (sanitizedState, source) =>
+            uploadServerBackupSnapshot(authSession.token, sanitizedState, source)
+        );
+        setAutoBackupStatus(res.status);
+        if (res.ran) {
+          setBackupMeta(loadBackupMeta(authSession.cpfId));
+        }
+      } catch {
+        const fallback = await getAutoBackupStatus(authSession.cpfId);
+        setAutoBackupStatus(fallback);
+      }
+    };
+
+    void executeCheck();
+    const interval = window.setInterval(() => {
+      void executeCheck();
+    }, 5 * 60 * 1000);
+
+    return () => window.clearInterval(interval);
+  }, [authSession]);
 
   const totals = useMemo(
     () => computeMatrixTotals(state.rows, state.entries, state.settings.activeYear),
@@ -961,6 +1017,48 @@ export default function App() {
     setState(normalizeRestoredState(imported));
   };
 
+  const handleRunManualBackupNow = async () => {
+    if (!authSession) return;
+    const status = await createBackupSnapshotAndPersist(
+      authSession.cpfId,
+      state,
+      authSession.profile,
+      'manual',
+      (sanitizedState, source) =>
+        uploadServerBackupSnapshot(authSession.token, sanitizedState, source)
+    );
+    setAutoBackupStatus(status);
+    setBackupMeta(loadBackupMeta(authSession.cpfId));
+  };
+
+  const handleShareOrDownloadBackup = async () => {
+    if (!authSession) return;
+    await shareOrDownloadLatestBackupJSON(authSession.cpfId, state, authSession.profile);
+    setBackupMeta(markBackupCompleted(authSession.cpfId));
+  };
+
+  const handleRefreshVaultFromServer = async () => {
+    if (!authSession) return;
+    const fresh = await refreshVaultFromServer(authSession.token);
+    if (fresh) {
+      skipNextSyncRef.current = true;
+      setState(normalizeRestoredState(fresh));
+    }
+  };
+
+  const handleApplyOpenFinanceState = (patch: {
+    accounts?: BankAccount[];
+    revokedConsents?: BankAccount[];
+    auditLog?: AppState['auditLog'];
+  }) => {
+    setState((prev) => ({
+      ...prev,
+      ...(patch.accounts ? { accounts: patch.accounts } : {}),
+      ...(patch.revokedConsents ? { revokedConsents: patch.revokedConsents } : {}),
+      ...(patch.auditLog ? { auditLog: patch.auditLog } : {}),
+    }));
+  };
+
   const selectedRow = selectedCell
     ? state.rows.find((r) => r.id === selectedCell.rowId) ?? null
     : null;
@@ -1006,7 +1104,10 @@ export default function App() {
           onToggleTheme={() =>
             updateSettings({ theme: state.settings.theme === 'dark' ? 'light' : 'dark' })
           }
-          onOpenNewEntry={() => setNewEntryModalOpen(true)}
+          onOpenNewEntry={() => {
+            setNewEntryFlowType(undefined);
+            setNewEntryModalOpen(true);
+          }}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
         />
 
@@ -1056,6 +1157,10 @@ export default function App() {
                     setActiveTab('settings');
                   }}
                   onOpenAccountsHub={() => setActiveTab('openfinance')}
+                  onQuickEntry={(flowType) => {
+                    setNewEntryFlowType(flowType);
+                    setNewEntryModalOpen(true);
+                  }}
                 />
               )}
 
@@ -1071,38 +1176,33 @@ export default function App() {
 
               {activeTab === 'openfinance' && (
                 <OpenFinanceView
+                  authToken={authSession.token}
                   accounts={state.accounts}
                   revokedConsents={state.revokedConsents ?? []}
                   rows={state.rows}
                   rules={state.rules}
                   auditLog={state.auditLog}
                   settings={state.settings}
-                  onConnectAccount={handleConnectAccount}
-                  onSyncAccount={handleSyncAccount}
-                  onRenewConsent={handleRenewAccountConsent}
-                  onSetAccountStatus={handleSetAccountStatus}
                   onTogglePauseAccount={handleTogglePauseAccount}
                   onDisconnectAccount={handleDisconnectAccount}
                   onAddRule={handleAddRule}
                   onToggleRule={handleToggleRule}
                   onDeleteRule={handleDeleteRule}
-                  onSimulateTransaction={handleSimulateTransaction}
+                  onRefreshVault={handleRefreshVaultFromServer}
+                  onApplySyncedState={handleApplyOpenFinanceState}
                 />
               )}
 
               {activeTab === 'accounts' && (
                 <AccountsSecurityView
+                  authToken={authSession.token}
                   accounts={state.accounts}
-                  rows={state.rows}
                   auditLog={state.auditLog}
                   settings={state.settings}
-                  onConnectAccount={handleConnectAccount}
-                  onSyncAccount={handleSyncAccount}
-                  onRenewConsent={handleRenewAccountConsent}
-                  onSetAccountStatus={handleSetAccountStatus}
                   onTogglePauseAccount={handleTogglePauseAccount}
                   onDisconnectAccount={handleDisconnectAccount}
-                  onSimulateTransaction={handleSimulateTransaction}
+                  onRefreshVault={handleRefreshVaultFromServer}
+                  onApplySyncedState={handleApplyOpenFinanceState}
                 />
               )}
 
@@ -1118,6 +1218,15 @@ export default function App() {
                   authToken={authSession.token}
                   onAppendMessages={handleAppendMessages}
                   onClearHistory={handleClearChat}
+                />
+              )}
+
+              {activeTab === 'downloads' && (
+                <DownloadCenterView
+                  state={state}
+                  profile={authSession.profile}
+                  language={state.settings.language}
+                  onExportJSON={handleExportJSONBackup}
                 />
               )}
 
@@ -1156,12 +1265,72 @@ export default function App() {
                     )
                   }
                   onTestReinstallRecovery={handleTestReinstallRecovery}
+                  autoBackupStatus={autoBackupStatus}
+                  onRunManualBackupNow={handleRunManualBackupNow}
+                  onShareOrDownloadBackup={handleShareOrDownloadBackup}
                 />
               )}
             </motion.div>
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Mobile Bottom Quick Nav (4 core actions for < 2 minute daily workflow) */}
+      <nav
+        aria-label="Navegação rápida mobile"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 dark:bg-[#0D1320]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/[0.08] grid grid-cols-4 px-2 py-1.5"
+      >
+        <button
+          type="button"
+          onClick={() => setActiveTab('matrix')}
+          className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
+            activeTab === 'matrix'
+              ? 'text-[#A68342] dark:text-[#E5C88F]'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <TableProperties className="h-4 w-4" />
+          <span>Saldo / Matriz</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setNewEntryFlowType('expense');
+            setNewEntryModalOpen(true);
+          }}
+          className="flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+        >
+          <PlusCircle className="h-4 w-4" />
+          <span>+ / − Rápido</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('openfinance')}
+          className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
+            activeTab === 'openfinance'
+              ? 'text-[#A68342] dark:text-[#E5C88F]'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <Landmark className="h-4 w-4" />
+          <span>Open Finance</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('settings')}
+          className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
+            activeTab === 'settings'
+              ? 'text-[#A68342] dark:text-[#E5C88F]'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <SettingsIcon className="h-4 w-4" />
+          <span>Ajustes</span>
+        </button>
+      </nav>
 
       <CellDetailDrawer
         isOpen={Boolean(selectedCell && selectedRow)}
@@ -1186,6 +1355,7 @@ export default function App() {
         accounts={state.accounts}
         activeYear={state.settings.activeYear}
         defaultMonth={state.settings.focusMonth ?? 10}
+        initialFlowType={newEntryFlowType}
         language={state.settings.language}
         onClose={() => setNewEntryModalOpen(false)}
         onAddEntry={handleAddEntry}

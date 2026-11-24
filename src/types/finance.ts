@@ -7,6 +7,7 @@ export type NavTab =
   | 'accounts'
   | 'investments'
   | 'assistant'
+  | 'downloads'
   | 'settings';
 
 export type EntrySource = 'manual' | 'auto' | 'simulated';
@@ -75,7 +76,13 @@ export interface TransactionEntry {
 }
 
 export type AccountType = 'Corrente' | 'Digital' | 'Cartão de Crédito';
-export type AccountStatus = 'active' | 'paused' | 'consent_expired' | 'sync_error';
+export type AccountStatus =
+  | 'active'
+  | 'paused'
+  | 'pending_bank_confirmation'
+  | 'consent_expired'
+  | 'sync_error'
+  | 'revoked';
 export type ConnectorProvider = 'Open Finance Brasil (FAPI)' | 'Pluggy' | 'Belvo';
 export type InvoiceState = 'open' | 'closed' | 'paid';
 
@@ -104,6 +111,8 @@ export interface BankAccount {
   invoiceDueDay?: number;
   currentInvoiceStatus?: InvoiceState;
   revokedAt?: string;
+  externalConsentId?: string;
+  externalItemId?: string;
 }
 
 export interface AutoRule {

@@ -135,6 +135,35 @@ export function evaluateAccountHealth(
     };
   }
 
+  if (effectiveStatus === 'revoked') {
+    return {
+      effectiveStatus,
+      isHealthy: false,
+      needsAction: false,
+      expiringSoon: false,
+      daysUntilExpiry,
+      badgeLabel: 'Revogada',
+      userMessage:
+        acc.statusMessage ||
+        'Consentimento revogado pelo titular. A sincronização foi encerrada permanentemente.',
+    };
+  }
+
+  if (effectiveStatus === 'pending_bank_confirmation') {
+    return {
+      effectiveStatus,
+      isHealthy: false,
+      needsAction: true,
+      expiringSoon: false,
+      daysUntilExpiry,
+      badgeLabel: 'Aguardando Banco',
+      userMessage:
+        acc.statusMessage ||
+        'Consentimento criado. Conclua a autorização no ambiente oficial da instituição financeira.',
+      actionLabel: 'Abrir Banco Oficial',
+    };
+  }
+
   if (effectiveStatus === 'paused') {
     return {
       effectiveStatus,

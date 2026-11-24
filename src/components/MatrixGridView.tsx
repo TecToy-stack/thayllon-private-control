@@ -73,6 +73,7 @@ interface MatrixGridViewProps {
   onDismissBackupReminder: () => void;
   onOpenGoalSettings: () => void;
   onOpenAccountsHub: () => void;
+  onQuickEntry: (flowType: 'income' | 'expense') => void;
 }
 
 export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
@@ -101,6 +102,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   onDismissBackupReminder,
   onOpenGoalSettings,
   onOpenAccountsHub,
+  onQuickEntry,
 }) => {
   const [search, setSearch] = useState('');
   const [feedFilter, setFeedFilter] = useState<'all' | 'credit' | 'debit' | 'pix' | 'income'>('all');
@@ -112,6 +114,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
     savings: false,
   });
   const [showNewRowForm, setShowNewRowForm] = useState(false);
+  const [showMobileMatrix, setShowMobileMatrix] = useState(false);
   const [newRowBlock, setNewRowBlock] = useState<BlockType>('variable');
   const [newRowName, setNewRowName] = useState('');
   const [newRowDay, setNewRowDay] = useState('');
@@ -333,7 +336,42 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20 lg:pb-6">
+      {/* ==================== 0A. ACESSO RÁPIDO 2 TOQUES (ENTRADA / DESPESA) ==================== */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 sm:p-4 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="text-xs text-slate-500 dark:text-slate-400">
+            <span className="block text-[11px]">Saldo / Resultado ({monthNamesShort[focusMonth]})</span>
+            <strong
+              className={`text-base sm:text-lg font-mono tabular-nums ${
+                spotlight.result >= 0
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-red-600 dark:text-red-400'
+              }`}
+            >
+              {formatBRL(spotlight.result, privacyMode, true)}
+            </strong>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onQuickEntry('income')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>+ Entrada</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onQuickEntry('expense')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] hover:opacity-90 transition-opacity"
+          >
+            <span>- Despesa</span>
+          </button>
+        </div>
+      </div>
+
       {/* ==================== 0. LEMBRETE DISCRETO DE BACKUP JSON ==================== */}
       <BackupReminderBanner
         visible={backupReminderVisible}
@@ -736,16 +774,18 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
         </div>
       </section>
 
-      {/* ==================== 1B. RESUMO MENSAL COMPARATIVO (MÊS ATUAL VS ANTERIOR) ==================== */}
-      <MonthComparisonStrip
-        rows={rows}
-        entries={entries}
-        totals={totals}
-        activeYear={activeYear}
-        focusMonth={focusMonth}
-        privacyMode={privacyMode}
-        language={language}
-      />
+      {/* ==================== 1B. RESUMO MENSAL COMPARATIVO (OCULTO NO MOBILE COMPACTO) ==================== */}
+      <div className="hidden sm:block">
+        <MonthComparisonStrip
+          rows={rows}
+          entries={entries}
+          totals={totals}
+          activeYear={activeYear}
+          focusMonth={focusMonth}
+          privacyMode={privacyMode}
+          language={language}
+        />
+      </div>
 
       {/* ==================== 1C. CENTRAL DE CONTROLE DIÁRIO (RECORRENTES, LIMITES, PARCELAS & BUSCA) ==================== */}
       <DailyControlHub
@@ -1061,8 +1101,20 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
         </form>
       )}
 
+      {/* Mobile Toggle for Full 12-Month Matrix Table */}
+      <div className="sm:hidden">
+        <button
+          type="button"
+          onClick={() => setShowMobileMatrix((v) => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] text-xs font-semibold text-slate-800 dark:text-slate-100"
+        >
+          <span>{showMobileMatrix ? 'Ocultar Grade Anual Completa (12 meses)' : 'Expandir Grade Anual Completa (12 meses)'}</span>
+          {showMobileMatrix ? <ChevronDown className="h-4 w-4 text-[#C9A86A]" /> : <ChevronRight className="h-4 w-4 text-[#C9A86A]" />}
+        </button>
+      </div>
+
       {/* Main Matrix Spreadsheet */}
-      <div className="rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
+      <div className={`${showMobileMatrix ? 'block' : 'hidden sm:block'} rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] overflow-hidden`}>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left">
             <thead>

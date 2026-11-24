@@ -724,6 +724,7 @@ const PT_TRANSLATIONS: AppTranslations = {
       accounts: 'Contas & Segurança',
       investments: 'Investimentos',
       assistant: 'Chat & Gerente',
+      downloads: 'Download & App',
       settings: 'Configurações',
     },
     openFinanceAttention: 'Requer atenção no consentimento',
@@ -747,7 +748,7 @@ const PT_TRANSLATIONS: AppTranslations = {
       },
       openfinance: {
         section: 'Open Finance Brasil (OAuth 2.0 + PKCE)',
-        subtitle: 'Consentimentos (até 5 contas), auto-categorização, simulador e trilha de auditoria',
+        subtitle: 'Consentimentos (até 5 contas), auto-categorização, sincronização real e trilha de auditoria',
       },
       accounts: {
         section: 'Contas & Segurança Bancária',
@@ -760,6 +761,10 @@ const PT_TRANSLATIONS: AppTranslations = {
       assistant: {
         section: 'Chat Amigo & Gerente Exclusivo',
         subtitle: 'Inteligência financeira em tempo real sobre seus dados',
+      },
+      downloads: {
+        section: 'Central de Download & Instalação do App',
+        subtitle: 'APK Android, GitHub Actions, QR Code, PWA e pacote de backup portátil',
       },
       settings: {
         section: 'Central de Configurações',
@@ -1335,6 +1340,7 @@ const EN_TRANSLATIONS: AppTranslations = {
       accounts: 'Accounts & Security',
       investments: 'Investments',
       assistant: 'Chat & Advisor',
+      downloads: 'Download & App',
       settings: 'Settings',
     },
     openFinanceAttention: 'Consent attention required',
@@ -1358,7 +1364,7 @@ const EN_TRANSLATIONS: AppTranslations = {
       },
       openfinance: {
         section: 'Open Finance Brazil (OAuth 2.0 + PKCE)',
-        subtitle: 'Consents (up to 5 accounts), auto-categorization, simulator and audit trail',
+        subtitle: 'Consents (up to 5 accounts), auto-categorization, live sync and audit trail',
       },
       accounts: {
         section: 'Accounts & Banking Security',
@@ -1371,6 +1377,10 @@ const EN_TRANSLATIONS: AppTranslations = {
       assistant: {
         section: 'Friendly Chat & Private Banker',
         subtitle: 'Real-time financial intelligence grounded in your numbers',
+      },
+      downloads: {
+        section: 'App Download & Installation Center',
+        subtitle: 'Android APK, GitHub Actions, QR Code, PWA and portable backup bundle',
       },
       settings: {
         section: 'Settings Center',
@@ -1946,6 +1956,7 @@ const ES_TRANSLATIONS: AppTranslations = {
       accounts: 'Cuentas y Seguridad',
       investments: 'Inversiones',
       assistant: 'Chat y Asesor',
+      downloads: 'Descargas y App',
       settings: 'Configuración',
     },
     openFinanceAttention: 'Requiere atención de consentimiento',
@@ -1969,7 +1980,7 @@ const ES_TRANSLATIONS: AppTranslations = {
       },
       openfinance: {
         section: 'Open Finance Brasil (OAuth 2.0 + PKCE)',
-        subtitle: 'Consentimientos (hasta 5 cuentas), autocategorización, simulador y auditoría',
+        subtitle: 'Consentimientos (hasta 5 cuentas), autocategorización, sincronización real y auditoría',
       },
       accounts: {
         section: 'Cuentas y Seguridad Bancaria',
@@ -1982,6 +1993,10 @@ const ES_TRANSLATIONS: AppTranslations = {
       assistant: {
         section: 'Chat Amigo y Gerente Exclusivo',
         subtitle: 'Inteligencia financiera en tiempo real sobre tus datos',
+      },
+      downloads: {
+        section: 'Centro de Descarga e Instalación',
+        subtitle: 'APK Android, GitHub Actions, Código QR, PWA y paquete de respaldo',
       },
       settings: {
         section: 'Centro de Configuración',
