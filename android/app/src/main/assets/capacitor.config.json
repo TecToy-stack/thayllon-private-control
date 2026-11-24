@@ -1,0 +1,21 @@
+{
+	"appId": "com.thayllon.privatecontrol",
+	"appName": "Thayllon Private Control",
+	"webDir": "dist",
+	"android": {
+		"backgroundColor": "#090D16",
+		"allowMixedContent": false,
+		"captureInput": true,
+		"webContentsDebuggingEnabled": false
+	},
+	"server": {
+		"androidScheme": "https"
+	},
+	"plugins": {
+		"SplashScreen": {
+			"launchShowDuration": 1200,
+			"backgroundColor": "#090D16",
+			"showSpinner": false
+		}
+	}
+}
