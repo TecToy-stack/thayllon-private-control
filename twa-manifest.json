@@ -1,0 +1,40 @@
+{
+  "packageId": "com.thayllon.privatecontrol",
+  "host": "ais-pre-zat6feg3ag2ennlct2lc5k-920027888558.us-east1.run.app",
+  "name": "Thayllon Private Control (CF 2026+)",
+  "launcherName": "Private Ctrl",
+  "display": "standalone",
+  "themeColor": "#090D16",
+  "themeColorDark": "#090D16",
+  "navigationColor": "#090D16",
+  "navigationColorDark": "#090D16",
+  "navigationDividerColor": "#090D16",
+  "navigationDividerColorDark": "#090D16",
+  "backgroundColor": "#090D16",
+  "enableNotifications": false,
+  "startUrl": "/",
+  "iconUrl": "https://ais-pre-zat6feg3ag2ennlct2lc5k-920027888558.us-east1.run.app/pwa-512x512.png",
+  "maskableIconUrl": "https://ais-pre-zat6feg3ag2ennlct2lc5k-920027888558.us-east1.run.app/pwa-maskable-512x512.png",
+  "monochromeIconUrl": "https://ais-pre-zat6feg3ag2ennlct2lc5k-920027888558.us-east1.run.app/pwa-512x512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "thayllon-private-key"
+  },
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://ais-pre-zat6feg3ag2ennlct2lc5k-920027888558.us-east1.run.app/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://ais-pre-zat6feg3ag2ennlct2lc5k-920027888558.us-east1.run.app/",
+  "minSdkVersion": 24,
+  "orientation": "portrait"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Thayllon Private Control (CF 2026+)",
+  "description": "Plataforma exclusiva de controle financeiro matricial anual, Open Finance seguro, timeline projetada e consultoria patrimonial inteligente.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
