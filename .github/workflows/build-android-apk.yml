@@ -31,9 +31,6 @@ jobs:
 
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          api-level: '35'
-          build-tools-version: '35.0.0'
 
       - name: Instalar dependências
         run: npm install
