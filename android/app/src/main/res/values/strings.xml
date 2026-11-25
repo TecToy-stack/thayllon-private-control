@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Thayllon Private Control</string>
-    <string name="title_activity_main">Thayllon Private Control</string>
+    <string name="app_name">ORBE Finanças</string>
+    <string name="title_activity_main">ORBE Finanças</string>
     <string name="package_name">com.thayllon.privatecontrol</string>
     <string name="custom_url_scheme">com.thayllon.privatecontrol</string>
 </resources>

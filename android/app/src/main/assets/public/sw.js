@@ -78,73 +78,79 @@ define(['./workbox-afac4cd2'], (function (workbox) { 'use strict';
    */
   workbox.precacheAndRoute([{
     "url": "pwa-maskable-512x512.png",
-    "revision": "3e211bbf4c4f216ea281e45fefc53502"
+    "revision": "fa6049d8093e521a4dcf24371ed6722d"
   }, {
     "url": "pwa-maskable-192x192.png",
-    "revision": "7a3c27b81e8c7d163d51bacc25491f0e"
+    "revision": "ff588244de266e03b318c991486931b0"
   }, {
     "url": "pwa-512x512.png",
-    "revision": "23a305db62bc14262a098ac19d6222cd"
+    "revision": "a7009f573d5d10587675091ee2ae2cd5"
   }, {
     "url": "pwa-192x192.png",
-    "revision": "ef0ecc6c123be2f388b60ad4cc8f59eb"
+    "revision": "333c920f26e769d28a2661672da5a79e"
+  }, {
+    "url": "orbe-logo.png",
+    "revision": "8f64b8775cfece735a369e74ab1e2f98"
+  }, {
+    "url": "orbe-logo-dark.png",
+    "revision": "6a7058600b6bef5f30b93d48161b53f8"
   }, {
     "url": "index.html",
-    "revision": "e15488db68fc27966f5252876103d9b7"
-  }, {
-    "url": "icon.svg",
-    "revision": "3dba4a42c17c860d98da222aa4898d4c"
+    "revision": "5c778e1398a0b8a8dad74879bd6397aa"
   }, {
     "url": "apple-touch-icon.png",
-    "revision": "f63840d67a5e280cb2c87a357112a28e"
+    "revision": "2ada3eeebac891cadccbea4998e13c44"
   }, {
-    "url": "assets/web-wKBQcs8C.js",
+    "url": "assets/web-CPw3buDM.js",
     "revision": null
   }, {
-    "url": "assets/web-uyYYFAIf.js",
+    "url": "assets/web-CHv8ACzJ.js",
     "revision": null
   }, {
     "url": "assets/purify.es-BQJV6A36.js",
     "revision": null
   }, {
-    "url": "assets/native-IMoCA0G9.js",
+    "url": "assets/native-BUtVv7bF.js",
     "revision": null
   }, {
-    "url": "assets/index.es-Atx0Q-h3.js",
+    "url": "assets/index.es-Blv3P5WA.js",
     "revision": null
   }, {
-    "url": "assets/index-BI3RH8u5.css",
+    "url": "assets/index-CoUu5mH4.css",
     "revision": null
   }, {
-    "url": "assets/index--BnLF9fu.js",
+    "url": "assets/index-BCFSKTnJ.js",
     "revision": null
   }, {
-    "url": "assets/html2canvas-UQah6ENR.js",
+    "url": "assets/html2canvas-DudXOmv_.js",
     "revision": null
   }, {
-    "url": "assets/base-DV7-0tXx.js",
+    "url": "assets/base-BGhjuTtS.js",
     "revision": null
   }, {
     "url": "apple-touch-icon.png",
-    "revision": "f63840d67a5e280cb2c87a357112a28e"
+    "revision": "2ada3eeebac891cadccbea4998e13c44"
   }, {
-    "url": "icon.svg",
-    "revision": "3dba4a42c17c860d98da222aa4898d4c"
+    "url": "orbe-logo-dark.png",
+    "revision": "6a7058600b6bef5f30b93d48161b53f8"
+  }, {
+    "url": "orbe-logo.png",
+    "revision": "8f64b8775cfece735a369e74ab1e2f98"
   }, {
     "url": "pwa-192x192.png",
-    "revision": "ef0ecc6c123be2f388b60ad4cc8f59eb"
+    "revision": "333c920f26e769d28a2661672da5a79e"
   }, {
     "url": "pwa-512x512.png",
-    "revision": "23a305db62bc14262a098ac19d6222cd"
+    "revision": "a7009f573d5d10587675091ee2ae2cd5"
   }, {
     "url": "pwa-maskable-192x192.png",
-    "revision": "7a3c27b81e8c7d163d51bacc25491f0e"
+    "revision": "ff588244de266e03b318c991486931b0"
   }, {
     "url": "pwa-maskable-512x512.png",
-    "revision": "3e211bbf4c4f216ea281e45fefc53502"
+    "revision": "fa6049d8093e521a4dcf24371ed6722d"
   }, {
     "url": "manifest.webmanifest",
-    "revision": "20e60a1311fcc383d05289177798dde3"
+    "revision": "fed42ea2ac849ddd522260a3e3145c12"
   }], {});
   workbox.cleanupOutdatedCaches();
   workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("index.html"), {
