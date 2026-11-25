@@ -55,6 +55,11 @@ const SENSITIVE_KEYS = new Set([
   'secret',
   'clientSecret',
   'password',
+  'passwordHash',
+  'passwordSalt',
+  'newPassword',
+  'currentPassword',
+  'deviceKeySalt',
 ]);
 
 function sanitizeBackupObject(input: unknown, depth = 0): unknown {
@@ -185,6 +190,8 @@ export function hasOperationalDataForBackup(state: AppState): boolean {
   return (
     state.entries.length > 0 ||
     state.accounts.length > 0 ||
+    (state.creditCards?.length ?? 0) > 0 ||
+    (state.cardPurchases?.length ?? 0) > 0 ||
     state.goals.length > 0 ||
     (state.recurringBills?.length ?? 0) > 0
   );
@@ -196,8 +203,8 @@ export function buildSanitizedBackupPayload(
   exportedAt = new Date().toISOString()
 ) {
   return sanitizeBackupObject({
-    app: 'Thayllon Private Control (CF 2026+)',
-    formatVersion: 2,
+    app: 'ORBE Finanças',
+    formatVersion: 3,
     exportedAt,
     owner: {
       fullName: profile.fullName,
@@ -207,7 +214,9 @@ export function buildSanitizedBackupPayload(
       rows: state.rows,
       entries: state.entries,
       accounts: state.accounts,
-      revokedConsents: state.revokedConsents ?? [],
+      creditCards: state.creditCards ?? [],
+      cardPurchases: state.cardPurchases ?? [],
+      paidCardInvoices: state.paidCardInvoices ?? {},
       rules: state.rules,
       goals: state.goals,
       recurringBills: state.recurringBills ?? [],
@@ -222,7 +231,7 @@ export function buildBackupFilename(date = new Date()): string {
   const dateStamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
     date.getDate()
   ).padStart(2, '0')}`;
-  return `thayllon-private-control-backup-${dateStamp}.json`;
+  return `orbe-financas-backup-${dateStamp}.json`;
 }
 
 export function triggerJsonBlobDownload(jsonString: string, filename: string): void {
@@ -385,7 +394,7 @@ export async function shareOrDownloadLatestBackupJSON(
     };
     if (typeof nav.share === 'function' && (!nav.canShare || nav.canShare({ files: [file] }))) {
       await nav.share({
-        title: 'Thayllon Private Control — Backup 24h',
+        title: 'ORBE Finanças — Backup 24h',
         text: 'Backup criptografado sem credenciais bancárias (LGPD).',
         files: [file],
       });
@@ -397,4 +406,25 @@ export async function shareOrDownloadLatestBackupJSON(
 
   triggerJsonBlobDownload(jsonString, filename);
   return { method: 'download', filename };
+}
+
+export async function listAutoBackupSnapshots(cpfId: string): Promise<AutoBackupSnapshot[]> {
+  const rec = await readAutoBackupRecord(cpfId);
+  return rec?.snapshots ?? [];
+}
+
+export function parseBackupSnapshotState(payloadJson: string): Partial<AppState> | null {
+  try {
+    const parsed = JSON.parse(payloadJson) as { state?: Partial<AppState> } | Partial<AppState>;
+    const candidate =
+      parsed && typeof parsed === 'object' && 'state' in parsed && parsed.state
+        ? parsed.state
+        : (parsed as Partial<AppState>);
+    if (!candidate || typeof candidate !== 'object' || !Array.isArray(candidate.rows)) {
+      return null;
+    }
+    return candidate;
+  } catch {
+    return null;
+  }
 }

@@ -14,7 +14,7 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({ language }) 
   const t = getTranslations(language ?? loadStoredLanguage());
 
   return (
-    <div className="fixed bottom-4 left-4 z-50 inline-flex items-center gap-2 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-slate-950 shadow-lg">
+    <div className="fixed bottom-[calc(4.75rem+env(safe-area-inset-bottom,0px))] lg:bottom-4 left-4 z-50 inline-flex items-center gap-2 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-slate-950 shadow-lg">
       <WifiOff className="h-3.5 w-3.5" />
       <span>{t.modals.offlineBanner}</span>
     </div>

@@ -179,3 +179,113 @@ export function loadLastCpfPrivacyMask(): boolean {
     return false;
   }
 }
+
+const CADASTRAL_DRAFT_KEY = 'tpc_cadastral_draft_v1';
+const REMEMBERED_USERNAME_KEY = 'tpc_remembered_username_v1';
+
+export interface SavedCadastralDraft {
+  fullName: string;
+  birthDate: string;
+  email?: string;
+  phone?: string;
+  username?: string;
+  kycDocumentType?: 'CNH' | 'RG' | 'CIN';
+  kycDocumentLast4?: string;
+  updatedAt: string;
+}
+
+export function saveCadastralDraft(draft: Partial<SavedCadastralDraft>): SavedCadastralDraft | null {
+  try {
+    const existing = loadCadastralDraft();
+    const merged: SavedCadastralDraft = {
+      fullName: (draft.fullName ?? existing?.fullName ?? '').trim(),
+      birthDate: (draft.birthDate ?? existing?.birthDate ?? '').trim(),
+      email: (draft.email ?? existing?.email ?? '').trim() || undefined,
+      phone: (draft.phone ?? existing?.phone ?? '').trim() || undefined,
+      username: (draft.username ?? existing?.username ?? '').trim().toLowerCase() || undefined,
+      kycDocumentType: draft.kycDocumentType ?? existing?.kycDocumentType,
+      kycDocumentLast4:
+        (draft.kycDocumentLast4 ?? existing?.kycDocumentLast4 ?? '').replace(/\D/g, '').slice(-4) ||
+        undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    if (
+      !merged.fullName &&
+      !merged.birthDate &&
+      !merged.email &&
+      !merged.phone &&
+      !merged.username
+    ) {
+      return null;
+    }
+    localStorage.setItem(CADASTRAL_DRAFT_KEY, JSON.stringify(merged));
+    return merged;
+  } catch {
+    return null;
+  }
+}
+
+export function loadCadastralDraft(): SavedCadastralDraft | null {
+  try {
+    const raw = localStorage.getItem(CADASTRAL_DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SavedCadastralDraft>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      fullName: typeof parsed.fullName === 'string' ? parsed.fullName : '',
+      birthDate: typeof parsed.birthDate === 'string' ? parsed.birthDate : '',
+      email: typeof parsed.email === 'string' ? parsed.email : undefined,
+      phone: typeof parsed.phone === 'string' ? parsed.phone : undefined,
+      username: typeof parsed.username === 'string' ? parsed.username : undefined,
+      kycDocumentType:
+        parsed.kycDocumentType === 'CNH' ||
+        parsed.kycDocumentType === 'RG' ||
+        parsed.kycDocumentType === 'CIN'
+          ? parsed.kycDocumentType
+          : undefined,
+      kycDocumentLast4:
+        typeof parsed.kycDocumentLast4 === 'string' ? parsed.kycDocumentLast4 : undefined,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function clearCadastralDraft(): void {
+  try {
+    localStorage.removeItem(CADASTRAL_DRAFT_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
+export function saveRememberedUsername(username: string): void {
+  try {
+    const clean = username.trim().toLowerCase();
+    if (!clean) {
+      localStorage.removeItem(REMEMBERED_USERNAME_KEY);
+      return;
+    }
+    localStorage.setItem(REMEMBERED_USERNAME_KEY, clean);
+  } catch {
+    // Ignore
+  }
+}
+
+export function loadRememberedUsername(): string {
+  try {
+    return localStorage.getItem(REMEMBERED_USERNAME_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function clearRememberedUsername(): void {
+  try {
+    localStorage.removeItem(REMEMBERED_USERNAME_KEY);
+  } catch {
+    // Ignore
+  }
+}
+

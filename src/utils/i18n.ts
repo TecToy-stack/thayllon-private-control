@@ -149,9 +149,6 @@ export interface AppTranslations {
     closeMenu: string;
     navAria: string;
     nav: Record<NavTab, string>;
-    openFinanceAttention: string;
-    openFinanceActive: string;
-    openFinanceEmpty: string;
     kycVerified: string;
     kycReview: string;
     kycPending: string;
@@ -437,16 +434,11 @@ export interface AppTranslations {
     alertTag: string;
     projBalanceShort: string;
   };
-  openFinance: {
+  cards: {
     title: string;
-    connectedSuffix: string;
     subtitle: string;
-    tabAll: string;
-    tabConsents: string;
-    tabSimulator: string;
-    tabAudit: string;
-    connectInstitution: string;
-    limitReached: string;
+    newCardBtn: string;
+    newPurchaseBtn: string;
   };
   accounts: {
     title: string;
@@ -714,22 +706,19 @@ export interface AppTranslations {
 
 const PT_TRANSLATIONS: AppTranslations = {
   sidebar: {
-    subtitle: 'Control · CF 2026+',
+    subtitle: 'Controle Financeiro',
     closeMenu: 'Fechar menu',
     navAria: 'Navegação principal',
     nav: {
       matrix: 'Grade Mensal',
       timeline: 'Timeline',
-      openfinance: 'Open Finance',
+      cards: 'Cartões',
       accounts: 'Contas & Segurança',
       investments: 'Investimentos',
       assistant: 'Chat & Gerente',
-      downloads: 'Download & App',
+      downloads: 'Download',
       settings: 'Configurações',
     },
-    openFinanceAttention: 'Requer atenção no consentimento',
-    openFinanceActive: 'Consentimentos ativos',
-    openFinanceEmpty: 'Nenhuma instituição conectada',
     kycVerified: 'Identidade Verificada',
     kycReview: 'KYC em análise',
     kycPending: 'KYC pendente',
@@ -740,19 +729,19 @@ const PT_TRANSLATIONS: AppTranslations = {
     tabs: {
       matrix: {
         section: 'Grade Matricial Anual',
-        subtitle: 'Fluxo consolidado de receitas, fixas, variáveis e reservas',
+        subtitle: 'Saldo em conta, faturas, fluxo consolidado de receitas e despesas',
       },
       timeline: {
         section: 'Timeline & Projeção de Caixa',
         subtitle: 'Cronologia de vencimentos, entradas e saldo projetado',
       },
-      openfinance: {
-        section: 'Open Finance Brasil (OAuth 2.0 + PKCE)',
-        subtitle: 'Consentimentos (até 5 contas), auto-categorização, sincronização real e trilha de auditoria',
+      cards: {
+        section: 'Cartões de Crédito & Parcelamentos',
+        subtitle: 'Limites livres, parcelas 1x–24x, fechamento e melhor dia de compra',
       },
       accounts: {
-        section: 'Contas & Segurança Bancária',
-        subtitle: 'Integração Open Finance com até 5 instituições e auditoria',
+        section: 'Contas Bancárias & Segurança',
+        subtitle: 'Controle manual de até 5 contas e trilha de auditoria do cofre',
       },
       investments: {
         section: 'Prospecção & Investimentos',
@@ -763,8 +752,8 @@ const PT_TRANSLATIONS: AppTranslations = {
         subtitle: 'Inteligência financeira em tempo real sobre seus dados',
       },
       downloads: {
-        section: 'Central de Download & Instalação do App',
-        subtitle: 'APK Android, GitHub Actions, QR Code, PWA e pacote de backup portátil',
+        section: 'Central de Download',
+        subtitle: 'Importação de planilha CSV e exportação de relatório em PDF',
       },
       settings: {
         section: 'Central de Configurações',
@@ -793,7 +782,7 @@ const PT_TRANSLATIONS: AppTranslations = {
       security: 'Segurança & Privacidade',
     },
     monitoring: {
-      syncFrequency: 'Frequência de Sincronização Open Finance',
+      syncFrequency: 'Frequência de Verificação Automática',
       every15m: 'A cada 15 minutos',
       every30m: 'A cada 30 minutos',
       every1h: 'A cada 1 hora',
@@ -934,7 +923,7 @@ const PT_TRANSLATIONS: AppTranslations = {
     cardInvoices: 'Faturas de Cartão',
     attentionBanner: 'conta(s) requerem renovação de consentimento ou reconexão oficial.',
     checkConnectors: 'Verificar Conectores',
-    openFinanceTitle: 'Open Finance · Crédito, Débito & Faturas',
+    openFinanceTitle: 'Cartões, Modalidades & Faturas',
     accountsRatio: 'Contas',
     paymentDist: 'Distribuição por Forma de Pagamento',
     credit: 'Crédito',
@@ -1048,21 +1037,16 @@ const PT_TRANSLATIONS: AppTranslations = {
     alertTag: 'Alerta',
     projBalanceShort: 'Saldo proj.:',
   },
-  openFinance: {
-    title: 'Gestão de Consentimentos Open Finance Brasil',
-    connectedSuffix: 'contas conectadas',
-    subtitle: 'Autorização via OAuth 2.0 + PKCE (FAPI) · TLS 1.3 · Tokenização AES-256 somente leitura. Nunca coletamos senhas bancárias, PINs, MFA ou CVV.',
-    tabAll: 'Visão Completa',
-    tabConsents: 'Contas & Consentimentos',
-    tabSimulator: 'Simulador & Regras',
-    tabAudit: 'Auditoria LGPD',
-    connectInstitution: 'Conectar Nova Instituição',
-    limitReached: 'Limite de 5/5 Contas Atingido',
+  cards: {
+    title: 'Cartões de Crédito & Parcelamentos',
+    subtitle: 'Gerencie seus cartões, faturas mensais, limites livres e melhor dia de compra.',
+    newCardBtn: 'Novo Cartão',
+    newPurchaseBtn: 'Nova Compra',
   },
   accounts: {
-    title: 'Contas Conectadas (Open Finance Seguro)',
-    subtitle: 'Slots para até 5 instituições via OAuth 2.0 + PKCE somente leitura. Nenhuma senha bancária é armazenada.',
-    connectBank: 'Conectar Instituição',
+    title: 'Contas Bancárias & Segurança',
+    subtitle: 'Controle direto de até 5 contas bancárias e digitais no seu cofre privado.',
+    connectBank: 'Adicionar Conta',
     limitReached: 'Limite de 5 Contas Atingido',
   },
   investments: {
@@ -1111,7 +1095,7 @@ const PT_TRANSLATIONS: AppTranslations = {
       'Onde posso economizar mais este mês?',
       'Analisar à vista, parcelamentos restantes e limites dos cartões',
       'Quanto consigo investir sem apertar meu caixa?',
-      'Verificar saúde dos consentimentos Open Finance e faturas',
+      'Verificar limites disponíveis e faturas dos meus cartões',
     ],
     loadingText: 'Analisando seus lançamentos e projeções em tempo real...',
     errorTitle: 'Não foi possível obter resposta',
@@ -1330,22 +1314,19 @@ const PT_TRANSLATIONS: AppTranslations = {
 
 const EN_TRANSLATIONS: AppTranslations = {
   sidebar: {
-    subtitle: 'Control · CF 2026+',
+    subtitle: 'Financial Control',
     closeMenu: 'Close menu',
     navAria: 'Main navigation',
     nav: {
       matrix: 'Monthly Grid',
       timeline: 'Timeline',
-      openfinance: 'Open Finance',
+      cards: 'Cards',
       accounts: 'Accounts & Security',
       investments: 'Investments',
       assistant: 'Chat & Advisor',
-      downloads: 'Download & App',
+      downloads: 'Downloads',
       settings: 'Settings',
     },
-    openFinanceAttention: 'Consent attention required',
-    openFinanceActive: 'Active consents',
-    openFinanceEmpty: 'No institution connected',
     kycVerified: 'Verified Identity',
     kycReview: 'KYC Under Review',
     kycPending: 'KYC Pending',
@@ -1356,19 +1337,19 @@ const EN_TRANSLATIONS: AppTranslations = {
     tabs: {
       matrix: {
         section: 'Annual Financial Matrix',
-        subtitle: 'Consolidated cash flow across income, fixed, variable & savings',
+        subtitle: 'Account balance, card invoices, consolidated cash flow',
       },
       timeline: {
         section: 'Timeline & Cash Projection',
         subtitle: 'Chronology of due dates, inflows and projected balance',
       },
-      openfinance: {
-        section: 'Open Finance Brazil (OAuth 2.0 + PKCE)',
-        subtitle: 'Consents (up to 5 accounts), auto-categorization, live sync and audit trail',
+      cards: {
+        section: 'Credit Cards & Installments',
+        subtitle: 'Available limits, 1x–24x installments, closing dates & best purchase day',
       },
       accounts: {
-        section: 'Accounts & Banking Security',
-        subtitle: 'Open Finance integration for up to 5 institutions with full audit',
+        section: 'Bank Accounts & Security',
+        subtitle: 'Direct tracking for up to 5 accounts and vault audit trail',
       },
       investments: {
         section: 'Wealth & Investments',
@@ -1379,8 +1360,8 @@ const EN_TRANSLATIONS: AppTranslations = {
         subtitle: 'Real-time financial intelligence grounded in your numbers',
       },
       downloads: {
-        section: 'App Download & Installation Center',
-        subtitle: 'Android APK, GitHub Actions, QR Code, PWA and portable backup bundle',
+        section: 'Download Center',
+        subtitle: 'CSV spreadsheet import and PDF report export',
       },
       settings: {
         section: 'Settings Center',
@@ -1409,7 +1390,7 @@ const EN_TRANSLATIONS: AppTranslations = {
       security: 'Security & Privacy',
     },
     monitoring: {
-      syncFrequency: 'Open Finance Sync Frequency',
+      syncFrequency: 'Automated Check Frequency',
       every15m: 'Every 15 minutes',
       every30m: 'Every 30 minutes',
       every1h: 'Every 1 hour',
@@ -1550,7 +1531,7 @@ const EN_TRANSLATIONS: AppTranslations = {
     cardInvoices: 'Card Invoices',
     attentionBanner: 'account(s) require consent renewal or official reconnection.',
     checkConnectors: 'Check Connectors',
-    openFinanceTitle: 'Open Finance · Credit, Debit & Invoices',
+    openFinanceTitle: 'Cards, Methods & Invoices',
     accountsRatio: 'Accounts',
     paymentDist: 'Spending by Payment Method',
     credit: 'Credit',
@@ -1664,21 +1645,16 @@ const EN_TRANSLATIONS: AppTranslations = {
     alertTag: 'Alert',
     projBalanceShort: 'Proj. bal.:',
   },
-  openFinance: {
-    title: 'Open Finance Brazil Consent Management',
-    connectedSuffix: 'connected accounts',
-    subtitle: 'Authorization via OAuth 2.0 + PKCE (FAPI) · TLS 1.3 · Read-only AES-256 tokenization. We never collect bank passwords, PINs, MFA or CVV.',
-    tabAll: 'Full Overview',
-    tabConsents: 'Accounts & Consents',
-    tabSimulator: 'Simulator & Rules',
-    tabAudit: 'LGPD Audit Trail',
-    connectInstitution: 'Connect New Institution',
-    limitReached: '5/5 Accounts Limit Reached',
+  cards: {
+    title: 'Credit Cards & Installments',
+    subtitle: 'Track your cards, monthly invoices, available limits and best purchase day.',
+    newCardBtn: 'New Card',
+    newPurchaseBtn: 'New Purchase',
   },
   accounts: {
-    title: 'Connected Accounts (Secure Open Finance)',
-    subtitle: 'Up to 5 financial institutions via read-only OAuth 2.0 + PKCE. No bank passwords are stored.',
-    connectBank: 'Connect Institution',
+    title: 'Bank Accounts & Security',
+    subtitle: 'Direct control of up to 5 checking and digital accounts in your private vault.',
+    connectBank: 'Add Account',
     limitReached: '5 Accounts Limit Reached',
   },
   investments: {
@@ -1727,7 +1703,7 @@ const EN_TRANSLATIONS: AppTranslations = {
       'Where can I save more this month?',
       'Analyze spot spending, remaining installments & card limits',
       'How much can I invest without tightening cash flow?',
-      'Check Open Finance consent health and card bills',
+      'Check available limits and monthly credit card bills',
     ],
     loadingText: 'Analyzing your entries and projections in real time...',
     errorTitle: 'Could not retrieve response',
@@ -1946,22 +1922,19 @@ const EN_TRANSLATIONS: AppTranslations = {
 
 const ES_TRANSLATIONS: AppTranslations = {
   sidebar: {
-    subtitle: 'Control · CF 2026+',
+    subtitle: 'Control Financiero',
     closeMenu: 'Cerrar menú',
     navAria: 'Navegación principal',
     nav: {
       matrix: 'Matriz Mensual',
       timeline: 'Línea de Tiempo',
-      openfinance: 'Open Finance',
+      cards: 'Tarjetas',
       accounts: 'Cuentas y Seguridad',
       investments: 'Inversiones',
       assistant: 'Chat y Asesor',
-      downloads: 'Descargas y App',
+      downloads: 'Descargas',
       settings: 'Configuración',
     },
-    openFinanceAttention: 'Requiere atención de consentimiento',
-    openFinanceActive: 'Consentimientos activos',
-    openFinanceEmpty: 'Ninguna institución conectada',
     kycVerified: 'Identidad Verificada',
     kycReview: 'KYC en revisión',
     kycPending: 'KYC pendiente',
@@ -1972,19 +1945,19 @@ const ES_TRANSLATIONS: AppTranslations = {
     tabs: {
       matrix: {
         section: 'Matriz Financiera Anual',
-        subtitle: 'Flujo consolidado de ingresos, gastos fijos, variables y reservas',
+        subtitle: 'Saldo en cuenta, facturas, flujo consolidado de ingresos y gastos',
       },
       timeline: {
         section: 'Línea de Tiempo y Proyección de Caja',
         subtitle: 'Cronología de vencimientos, ingresos y saldo proyectado',
       },
-      openfinance: {
-        section: 'Open Finance Brasil (OAuth 2.0 + PKCE)',
-        subtitle: 'Consentimientos (hasta 5 cuentas), autocategorización, sincronización real y auditoría',
+      cards: {
+        section: 'Tarjetas de Crédito y Cuotas',
+        subtitle: 'Límites libres, cuotas 1x–24x, cierre y mejor día de compra',
       },
       accounts: {
-        section: 'Cuentas y Seguridad Bancaria',
-        subtitle: 'Integración Open Finance con hasta 5 instituciones y auditoría',
+        section: 'Cuentas Bancarias y Seguridad',
+        subtitle: 'Control directo de hasta 5 cuentas y auditoría de la bóveda',
       },
       investments: {
         section: 'Prospección e Inversiones',
@@ -1995,8 +1968,8 @@ const ES_TRANSLATIONS: AppTranslations = {
         subtitle: 'Inteligencia financiera en tiempo real sobre tus datos',
       },
       downloads: {
-        section: 'Centro de Descarga e Instalación',
-        subtitle: 'APK Android, GitHub Actions, Código QR, PWA y paquete de respaldo',
+        section: 'Centro de Descargas',
+        subtitle: 'Importación de planilla CSV y exportación de informe en PDF',
       },
       settings: {
         section: 'Centro de Configuración',
@@ -2025,7 +1998,7 @@ const ES_TRANSLATIONS: AppTranslations = {
       security: 'Seguridad y Privacidad',
     },
     monitoring: {
-      syncFrequency: 'Frecuencia de Sincronización Open Finance',
+      syncFrequency: 'Frecuencia de Revisión Automática',
       every15m: 'Cada 15 minutos',
       every30m: 'Cada 30 minutos',
       every1h: 'Cada 1 hora',
@@ -2166,7 +2139,7 @@ const ES_TRANSLATIONS: AppTranslations = {
     cardInvoices: 'Facturas de Tarjeta',
     attentionBanner: 'cuenta(s) requieren renovación de consentimiento o reconexión oficial.',
     checkConnectors: 'Verificar Conectores',
-    openFinanceTitle: 'Open Finance · Crédito, Débito y Facturas',
+    openFinanceTitle: 'Tarjetas, Modalidades y Facturas',
     accountsRatio: 'Cuentas',
     paymentDist: 'Distribución por Medio de Pago',
     credit: 'Crédito',
@@ -2280,21 +2253,16 @@ const ES_TRANSLATIONS: AppTranslations = {
     alertTag: 'Alerta',
     projBalanceShort: 'Saldo proy.:',
   },
-  openFinance: {
-    title: 'Gestión de Consentimientos Open Finance Brasil',
-    connectedSuffix: 'cuentas conectadas',
-    subtitle: 'Autorización vía OAuth 2.0 + PKCE (FAPI) · TLS 1.3 · Tokenización AES-256 solo lectura. Nunca solicitamos contraseñas bancarias, PINs, MFA o CVV.',
-    tabAll: 'Vista Completa',
-    tabConsents: 'Cuentas y Consentimientos',
-    tabSimulator: 'Simulador y Reglas',
-    tabAudit: 'Auditoría LGPD',
-    connectInstitution: 'Conectar Nueva Institución',
-    limitReached: 'Límite de 5/5 Cuentas Alcanzado',
+  cards: {
+    title: 'Tarjetas de Crédito y Cuotas',
+    subtitle: 'Gestiona tus tarjetas, facturas mensuales, límites disponibles y mejor día de compra.',
+    newCardBtn: 'Nueva Tarjeta',
+    newPurchaseBtn: 'Nueva Compra',
   },
   accounts: {
-    title: 'Cuentas Conectadas (Open Finance Seguro)',
-    subtitle: 'Hasta 5 instituciones financieras vía OAuth 2.0 + PKCE solo lectura. Ninguna contraseña bancaria es almacenada.',
-    connectBank: 'Conectar Institución',
+    title: 'Cuentas Bancarias y Seguridad',
+    subtitle: 'Control directo de hasta 5 cuentas bancarias y digitales en tu bóveda privada.',
+    connectBank: 'Agregar Cuenta',
     limitReached: 'Límite de 5 Cuentas Alcanzado',
   },
   investments: {
@@ -2343,7 +2311,7 @@ const ES_TRANSLATIONS: AppTranslations = {
       '¿Dónde puedo ahorrar más este mes?',
       'Analizar contado, cuotas restantes y límites de tarjetas',
       '¿Cuánto puedo invertir sin apretar mi flujo de caja?',
-      'Revisar salud de consentimientos Open Finance y facturas',
+      'Revisar límites disponibles y facturas de mis tarjetas',
     ],
     loadingText: 'Analizando tus movimientos y proyecciones en tiempo real...',
     errorTitle: 'No se pudo obtener respuesta',

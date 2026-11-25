@@ -1,12 +1,18 @@
 import { jsPDF } from 'jspdf';
-import { AppState, MatrixTotals } from '../types/finance';
+import { AppLanguage, AppState, MatrixTotals } from '../types/finance';
 import { MONTH_NAMES_FULL, MONTH_NAMES_SHORT } from '../data/initialData';
 import {
   computeGoalProgress,
+  computeMonthlyBudgetForecast,
   computeMonthSpotlight,
   formatBRL,
   formatCompactDay,
+  formatPaymentMethodLabel,
+  getEffectiveRecurringStatus,
+  isDeduplicatedEntry,
+  parseInstallmentInfo,
 } from './financeEngine';
+import { getMonthNamesFull } from './i18n';
 
 export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixTotals): void {
   const year = state.settings.activeYear;
@@ -47,12 +53,12 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(14);
-    doc.text('THAYLLON PRIVATE CONTROL', 14, 12);
+    doc.text('ORBE FINANÇAS', 14, 12);
 
     doc.setTextColor(...C_GOLD);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
-    doc.text(`CF ${year}+  ·  ${subtitle}`, 14, 18.5);
+    doc.text(`${year}  ·  ${subtitle}`, 14, 18.5);
 
     doc.setTextColor(180, 190, 205);
     doc.setFontSize(8);
@@ -225,11 +231,11 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
     doc.rect(rightX + 5, cy + 1.5, fillW, 2.2, 'F');
   });
 
-  // Bottom Row Page 1: Mês em Questão + Open Finance Modalidades (Left) & Metas de Economia (Right)
+  // Bottom Row Page 1: Mês em Questão + Modalidades & Cartões (Left) & Metas de Economia (Right)
   const botY = chartY + chartH + 6;
   const botH = 54;
 
-  // Left: Active Month + Open Finance Payment Modes
+  // Left: Active Month + Payment Modes & Cards
   doc.setFillColor(...C_BG_SOFT);
   doc.setDrawColor(...C_BORDER);
   doc.roundedRect(14, botY, leftW, botH, 2, 2, 'FD');
@@ -238,7 +244,7 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9.5);
   doc.text(
-    `Mês em Foco (${MONTH_NAMES_FULL[focusMonth]} ${year}) · Open Finance & Cartões`,
+    `Mês em Foco (${MONTH_NAMES_FULL[focusMonth]} ${year}) · Cartões & Modalidades`,
     19,
     botY + 7.5
   );
@@ -266,7 +272,7 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
 
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...C_SLATE_DARK);
-  doc.text('Faturas de Cartão, Limites & Contas Conectadas:', 19, botY + 32.5);
+  doc.text('Faturas de Cartão, Limites & Contas Registradas:', 19, botY + 32.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.2);
@@ -283,11 +289,7 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
     );
   });
   doc.text(
-    `Contas Open Finance ativas: ${state.accounts.length} / 5 (${
-      state.accounts.length > 0
-        ? state.accounts.map((a) => a.institution).join(', ')
-        : 'Nenhuma conectada'
-    })`,
+    `Contas: ${state.accounts.length} / 5 · Cartões cadastrados: ${(state.creditCards ?? []).length}`,
     19,
     botY + 48.5
   );
@@ -463,5 +465,667 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
   drawMatrixRow('RESULTADO MENSAL', totals.resultMonthly, totals.resultAnnual, 'subtotal');
   drawMatrixRow('GUARDADO (RESERVA)', totals.savingsMonthly, totals.savingsAnnual, 'highlight');
 
-  doc.save(`Thayllon_Private_Control_Relatorio_${year}.pdf`);
+  doc.save(`ORBE_Financas_Relatorio_${year}.pdf`);
 }
+
+export type PdfReportScope =
+  | 'consolidated'
+  | 'summary'
+  | 'income'
+  | 'expenses'
+  | 'recurrences'
+  | 'entries';
+
+export type PdfReportPeriod = 'month' | 'year';
+
+export type PdfReportStatusFilter = 'all' | 'paid' | 'pending';
+
+export interface PdfReportOptions {
+  state: AppState;
+  totals: MatrixTotals;
+  scope: PdfReportScope;
+  period: PdfReportPeriod;
+  focusMonth: number;
+  statusFilter?: PdfReportStatusFilter;
+  language?: AppLanguage;
+}
+
+export interface PdfReportPreviewStats {
+  entryCount: number;
+  recurringCount: number;
+  incomeTotal: number;
+  expenseTotal: number;
+  resultTotal: number;
+  savingsTotal: number;
+  projectedBalance: number;
+}
+
+function filterEntriesForPdf(options: PdfReportOptions) {
+  const { state, period, focusMonth, scope, statusFilter = 'all' } = options;
+  const year = state.settings.activeYear;
+  const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  const rowMap = new Map(state.rows.map((r) => [r.id, r]));
+
+  return state.entries
+    .filter((entry) => {
+      if (entry.year !== year) return false;
+      if (period === 'month' && entry.month !== safeMonth) return false;
+      if (isDeduplicatedEntry(entry)) return false;
+      const row = rowMap.get(entry.rowId);
+      if (!row || row.hidden) return false;
+
+      if (scope === 'income' && row.block !== 'income') return false;
+      if (scope === 'expenses' && row.block !== 'fixed' && row.block !== 'variable') return false;
+
+      if (statusFilter === 'paid' && entry.status !== 'paid') return false;
+      if (statusFilter === 'pending' && entry.status === 'paid') return false;
+      return true;
+    })
+    .sort((a, b) => a.month - b.month || a.day - b.day);
+}
+
+export function computePdfReportPreviewStats(options: PdfReportOptions): PdfReportPreviewStats {
+  const { state, totals, period, focusMonth } = options;
+  const year = state.settings.activeYear;
+  const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+
+  const filteredEntries = filterEntriesForPdf(options);
+  const activeRecurrences = (state.recurringBills ?? []).filter((b) => b.active !== false);
+
+  const forecast = computeMonthlyBudgetForecast({
+    rows: state.rows,
+    entries: state.entries,
+    accounts: state.accounts,
+    recurringBills: state.recurringBills ?? [],
+    creditCards: state.creditCards ?? [],
+    cardPurchases: state.cardPurchases ?? [],
+    paidCardInvoices: state.paidCardInvoices ?? {},
+    totals,
+    year,
+    focusMonth: safeMonth,
+  });
+
+  const incomeTotal =
+    period === 'month' ? totals.incomeMonthly[safeMonth] ?? 0 : totals.incomeAnnual;
+  const expenseTotal =
+    period === 'month' ? totals.totalExpenseMonthly[safeMonth] ?? 0 : totals.totalExpenseAnnual;
+  const resultTotal =
+    period === 'month' ? totals.resultMonthly[safeMonth] ?? 0 : totals.resultAnnual;
+  const savingsTotal =
+    period === 'month' ? totals.savingsMonthly[safeMonth] ?? 0 : totals.savingsAnnual;
+
+  return {
+    entryCount: filteredEntries.length,
+    recurringCount: activeRecurrences.length,
+    incomeTotal,
+    expenseTotal,
+    resultTotal,
+    savingsTotal,
+    projectedBalance: forecast.projectedMonthClose,
+  };
+}
+
+export function exportCustomPDFReport(options: PdfReportOptions): { filename: string } {
+  const {
+    state,
+    totals,
+    scope,
+    period,
+    focusMonth,
+    statusFilter = 'all',
+    language = state.settings.language,
+  } = options;
+
+  const year = state.settings.activeYear;
+  const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  const monthNames = getMonthNamesFull(language);
+  const periodLabel = period === 'month' ? `${monthNames[safeMonth]} ${year}` : `${year}`;
+
+  // If user requested complete consolidated annual report with no status filter, reuse the executive landscape PDF
+  if (scope === 'consolidated' && period === 'year' && statusFilter === 'all') {
+    generatePrivateBankingAnnualPDF(state, totals);
+    return { filename: `ORBE_Financas_Relatorio_${year}.pdf` };
+  }
+
+  const isEn = language === 'en';
+  const isEs = language === 'es';
+
+  const scopeLabels: Record<PdfReportScope, string> = isEn
+    ? {
+        consolidated: 'Consolidated Financial Report',
+        summary: 'Financial Summary',
+        income: 'Income Report',
+        expenses: 'Expenses & Cards Report',
+        recurrences: 'Recurrences & Cashflow Forecast',
+        entries: 'Detailed Entries Ledger',
+      }
+    : isEs
+    ? {
+        consolidated: 'Informe Financiero Consolidado',
+        summary: 'Resumen Financiero',
+        income: 'Informe de Ingresos',
+        expenses: 'Informe de Gastos y Tarjetas',
+        recurrences: 'Recurrencias y Previsión',
+        entries: 'Detalle de Movimientos',
+      }
+    : {
+        consolidated: 'Relatório Financeiro Consolidado',
+        summary: 'Resumo Financeiro',
+        income: 'Relatório de Receitas',
+        expenses: 'Relatório de Despesas e Cartões',
+        recurrences: 'Recorrências e Previsões',
+        entries: 'Lançamentos Detalhados',
+      };
+
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth(); // 210mm
+  const pageH = doc.internal.pageSize.getHeight(); // 297mm
+  const margin = 14;
+  const contentW = pageW - margin * 2;
+
+  const C_OBSIDIAN: [number, number, number] = [9, 13, 22];
+  const C_GOLD: [number, number, number] = [201, 168, 106];
+  const C_GOLD_DARK: [number, number, number] = [140, 106, 46];
+  const C_EMERALD: [number, number, number] = [16, 185, 129];
+  const C_ROSE: [number, number, number] = [220, 38, 38];
+  const C_SLATE_DARK: [number, number, number] = [15, 23, 42];
+  const C_SLATE_MUTED: [number, number, number] = [100, 116, 139];
+  const C_BORDER: [number, number, number] = [226, 232, 240];
+  const C_BG_SOFT: [number, number, number] = [248, 250, 252];
+
+  let pageNumber = 1;
+  let curY = 34;
+
+  const drawHeader = () => {
+    doc.setFillColor(...C_OBSIDIAN);
+    doc.rect(0, 0, pageW, 25, 'F');
+    doc.setFillColor(...C_GOLD);
+    doc.rect(0, 25, pageW, 0.8, 'F');
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13.5);
+    doc.text('ORBE FINANÇAS', margin, 11.5);
+
+    doc.setTextColor(...C_GOLD);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.text(`${scopeLabels[scope]}  ·  ${periodLabel}`, margin, 18.2);
+
+    doc.setTextColor(180, 190, 205);
+    doc.setFontSize(7.5);
+    const issued = new Date().toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    doc.text(`${issued}  ·  Pág. ${pageNumber}`, pageW - margin, 14.5, { align: 'right' });
+  };
+
+  const ensureSpace = (neededMm: number) => {
+    if (curY + neededMm > pageH - 16) {
+      doc.addPage('a4', 'portrait');
+      pageNumber += 1;
+      drawHeader();
+      curY = 33;
+    }
+  };
+
+  const drawSectionTitle = (title: string) => {
+    ensureSpace(14);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(...C_SLATE_DARK);
+    doc.text(title, margin, curY);
+    doc.setDrawColor(...C_GOLD);
+    doc.setLineWidth(0.4);
+    doc.line(margin, curY + 2, margin + 28, curY + 2);
+    doc.setDrawColor(...C_BORDER);
+    doc.setLineWidth(0.2);
+    doc.line(margin + 28, curY + 2, pageW - margin, curY + 2);
+    curY += 7;
+  };
+
+  drawHeader();
+
+  const rowMap = new Map(state.rows.map((r) => [r.id, r]));
+  const stats = computePdfReportPreviewStats(options);
+  const spotlight = computeMonthSpotlight(
+    state.rows,
+    state.entries,
+    state.accounts,
+    totals,
+    year,
+    safeMonth
+  );
+  const forecast = computeMonthlyBudgetForecast({
+    rows: state.rows,
+    entries: state.entries,
+    accounts: state.accounts,
+    recurringBills: state.recurringBills ?? [],
+    creditCards: state.creditCards ?? [],
+    cardPurchases: state.cardPurchases ?? [],
+    paidCardInvoices: state.paidCardInvoices ?? {},
+    totals,
+    year,
+    focusMonth: safeMonth,
+  });
+
+  // Top KPI Summary Strip (4 cards)
+  const kpiGap = 3.5;
+  const kpiW = (contentW - kpiGap * 3) / 4;
+  const kpiCards: Array<{
+    label: string;
+    value: string;
+    sub: string;
+    color: [number, number, number];
+  }> = [
+    {
+      label: isEn ? 'INCOME' : isEs ? 'INGRESOS' : 'RECEITAS',
+      value: formatBRL(stats.incomeTotal, false),
+      sub: periodLabel,
+      color: C_EMERALD,
+    },
+    {
+      label: isEn ? 'EXPENSES' : isEs ? 'GASTOS' : 'DESPESAS',
+      value: formatBRL(stats.expenseTotal, false),
+      sub:
+        period === 'month'
+          ? `Fixas ${formatBRL(totals.fixedMonthly[safeMonth] ?? 0)} · Var ${formatBRL(
+              totals.variableMonthly[safeMonth] ?? 0
+            )}`
+          : `Fixas ${formatBRL(totals.fixedAnnual)} · Var ${formatBRL(totals.variableAnnual)}`,
+      color: C_SLATE_DARK,
+    },
+    {
+      label: isEn ? 'NET RESULT' : isEs ? 'RESULTADO' : 'RESULTADO LÍQUIDO',
+      value: formatBRL(stats.resultTotal, false, true),
+      sub:
+        stats.incomeTotal > 0
+          ? `Margem ${((stats.resultTotal / stats.incomeTotal) * 100).toFixed(1)}%`
+          : 'Fluxo do período',
+      color: stats.resultTotal >= 0 ? C_EMERALD : C_ROSE,
+    },
+    {
+      label: isEn ? 'PROJECTED / SAVED' : isEs ? 'PROYECCIÓN / RESERVA' : 'PREVISÃO / RESERVA',
+      value:
+        scope === 'recurrences' || period === 'month'
+          ? formatBRL(forecast.projectedMonthClose, false, true)
+          : formatBRL(stats.savingsTotal, false),
+      sub:
+        scope === 'recurrences' || period === 'month'
+          ? `Reserva: ${formatBRL(stats.savingsTotal)}`
+          : 'Acumulado em reserva',
+      color: C_GOLD_DARK,
+    },
+  ];
+
+  kpiCards.forEach((k, idx) => {
+    const x = margin + idx * (kpiW + kpiGap);
+    doc.setFillColor(...C_BG_SOFT);
+    doc.setDrawColor(...C_BORDER);
+    doc.roundedRect(x, curY, kpiW, 21, 1.8, 1.8, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.setTextColor(...C_SLATE_MUTED);
+    doc.text(k.label, x + 3, curY + 5.5);
+
+    doc.setFontSize(10.5);
+    doc.setTextColor(...k.color);
+    doc.text(k.value, x + 3, curY + 12.5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.2);
+    doc.setTextColor(...C_SLATE_MUTED);
+    doc.text(k.sub.slice(0, 30), x + 3, curY + 17.8);
+  });
+  curY += 28;
+
+  // Section 1: Summary / Category Breakdown
+  if (scope === 'consolidated' || scope === 'summary' || scope === 'income' || scope === 'expenses') {
+    const blocksIncluded =
+      scope === 'income'
+        ? (['income'] as const)
+        : scope === 'expenses'
+        ? (['fixed', 'variable'] as const)
+        : (['income', 'fixed', 'variable', 'savings'] as const);
+
+    const blockNames: Record<string, string> = {
+      income: isEn ? 'Income' : isEs ? 'Ingresos' : 'Receitas',
+      fixed: isEn ? 'Fixed Expenses' : isEs ? 'Gastos Fijos' : 'Despesas Fixas',
+      variable: isEn ? 'Variable Expenses' : isEs ? 'Gastos Variables' : 'Despesas Variáveis',
+      savings: isEn ? 'Reserves & Savings' : isEs ? 'Reservas' : 'Reservas / Guardado',
+    };
+
+    const catRows = state.rows
+      .filter((r) => !r.hidden && (blocksIncluded as readonly string[]).includes(r.block))
+      .map((r) => ({
+        row: r,
+        val:
+          period === 'month'
+            ? totals.rowMonthly[r.id]?.[safeMonth] ?? 0
+            : totals.rowAnnual[r.id] ?? 0,
+        annual: totals.rowAnnual[r.id] ?? 0,
+      }))
+      .filter((item) => item.val > 0 || item.annual > 0 || scope === 'summary' || scope === 'consolidated');
+
+    drawSectionTitle(
+      isEn
+        ? `Category Breakdown (${periodLabel})`
+        : isEs
+        ? `Resumen por Categoría (${periodLabel})`
+        : `Resumo por Categoria (${periodLabel})`
+    );
+
+    const drawCatTableHeader = () => {
+      doc.setFillColor(...C_OBSIDIAN);
+      doc.rect(margin, curY, contentW, 6.5, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.text('CATEGORIA', margin + 2.5, curY + 4.4);
+      doc.text('BLOCO', margin + 84, curY + 4.4);
+      doc.text('DIA REF.', margin + 122, curY + 4.4);
+      doc.text(period === 'month' ? 'VALOR NO MÊS' : 'VALOR ANUAL', pageW - margin - 2.5, curY + 4.4, {
+        align: 'right',
+      });
+      curY += 6.5;
+    };
+
+    drawCatTableHeader();
+
+    if (catRows.length === 0) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(...C_SLATE_MUTED);
+      doc.text('Nenhuma categoria com movimentação neste filtro.', margin + 2.5, curY + 5);
+      curY += 10;
+    } else {
+      catRows.forEach((item, idx) => {
+        if (curY + 6 > pageH - 16) {
+          ensureSpace(14);
+          drawCatTableHeader();
+        }
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, curY, contentW, 5.6, 'F');
+        }
+        doc.setDrawColor(...C_BORDER);
+        doc.line(margin, curY + 5.6, pageW - margin, curY + 5.6);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.2);
+        doc.setTextColor(...C_SLATE_DARK);
+        doc.text(item.row.name.slice(0, 38), margin + 2.5, curY + 3.9);
+        doc.setTextColor(...C_SLATE_MUTED);
+        doc.text(blockNames[item.row.block] ?? item.row.block, margin + 84, curY + 3.9);
+        doc.text(item.row.refDay ? formatCompactDay(item.row.refDay) : '—', margin + 122, curY + 3.9);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...(item.row.block === 'income' ? C_EMERALD : C_SLATE_DARK));
+        doc.text(formatBRL(item.val, false), pageW - margin - 2.5, curY + 3.9, { align: 'right' });
+        curY += 5.6;
+      });
+      curY += 6;
+    }
+  }
+
+  // Section 2: Credit Cards & Limits (on consolidated, summary, or expenses)
+  if ((scope === 'consolidated' || scope === 'summary' || scope === 'expenses') && (state.creditCards ?? []).length > 0) {
+    drawSectionTitle(
+      isEn
+        ? `Credit Cards & Invoices (${monthNames[safeMonth]} ${year})`
+        : isEs
+        ? `Tarjetas de Crédito y Facturas (${monthNames[safeMonth]} ${year})`
+        : `Cartões de Crédito & Limites (${monthNames[safeMonth]} ${year})`
+    );
+
+    const cardsHeader = () => {
+      doc.setFillColor(...C_OBSIDIAN);
+      doc.rect(margin, curY, contentW, 6.5, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.text('CARTÃO / BANCO', margin + 2.5, curY + 4.4);
+      doc.text('FECH. / VENC.', margin + 74, curY + 4.4);
+      doc.text('FATURA MÊS', margin + 124, curY + 4.4, { align: 'right' });
+      doc.text('LIMITE LIVRE', pageW - margin - 2.5, curY + 4.4, { align: 'right' });
+      curY += 6.5;
+    };
+
+    cardsHeader();
+    spotlight.cardInvoices.forEach((inv, idx) => {
+      if (curY + 6 > pageH - 16) {
+        ensureSpace(14);
+        cardsHeader();
+      }
+      if (idx % 2 === 1) {
+        doc.setFillColor(248, 250, 252);
+        doc.rect(margin, curY, contentW, 5.8, 'F');
+      }
+      doc.setDrawColor(...C_BORDER);
+      doc.line(margin, curY + 5.8, pageW - margin, curY + 5.8);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.2);
+      doc.setTextColor(...C_SLATE_DARK);
+      doc.text(`${inv.name} (${inv.status})`.slice(0, 34), margin + 2.5, curY + 4);
+      doc.setTextColor(...C_SLATE_MUTED);
+      const datesText = inv.closingDay
+        ? `Fech. ${formatCompactDay(inv.closingDay)} / Venc. ${formatCompactDay(inv.dueDay)}`
+        : `Venc. ${formatCompactDay(inv.dueDay)}`;
+      doc.text(datesText, margin + 74, curY + 4);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(...C_SLATE_DARK);
+      doc.text(formatBRL(inv.amount, false), margin + 124, curY + 4, { align: 'right' });
+      doc.setTextColor(...C_EMERALD);
+      doc.text(
+        inv.availableLimit !== undefined ? formatBRL(inv.availableLimit, false) : '—',
+        pageW - margin - 2.5,
+        curY + 4,
+        { align: 'right' }
+      );
+      curY += 5.8;
+    });
+    curY += 6;
+  }
+
+  // Section 3: Recurrences & Cashflow Forecast (on consolidated, recurrences, or summary)
+  if (scope === 'consolidated' || scope === 'recurrences' || scope === 'summary') {
+    drawSectionTitle(
+      isEn
+        ? `Recurrences & Forecast (${monthNames[safeMonth]} ${year})`
+        : isEs
+        ? `Recurrencias y Previsión (${monthNames[safeMonth]} ${year})`
+        : `Recorrências & Previsões de Caixa (${monthNames[safeMonth]} ${year})`
+    );
+
+    // Forecast summary bar
+    ensureSpace(16);
+    doc.setFillColor(...C_BG_SOFT);
+    doc.setDrawColor(...C_BORDER);
+    doc.roundedRect(margin, curY, contentW, 12, 1.5, 1.5, 'FD');
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.4);
+    doc.setTextColor(...C_SLATE_DARK);
+    doc.text(
+      `Receita Prevista: ${formatBRL(forecast.totalForecastIncome)}  ·  Gasto Previsto: ${formatBRL(
+        forecast.totalForecastExpense
+      )}  ·  Pendências do Mês: ${formatBRL(
+        forecast.totalPendingCommitments
+      )}  ·  Saldo Projetado: ${formatBRL(forecast.projectedMonthClose, false, true)}`,
+      margin + 3.5,
+      curY + 7.2
+    );
+    curY += 15;
+
+    const bills = [...(state.recurringBills ?? [])].sort((a, b) => a.dueDay - b.dueDay);
+    if (bills.length === 0) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(...C_SLATE_MUTED);
+      doc.text('Nenhuma conta fixa ou recebimento recorrente cadastrado.', margin + 2, curY + 4);
+      curY += 9;
+    } else {
+      const recHeader = () => {
+        doc.setFillColor(...C_OBSIDIAN);
+        doc.rect(margin, curY, contentW, 6.5, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7);
+        doc.text('ITEM RECORRENTE', margin + 2.5, curY + 4.4);
+        doc.text('TIPO', margin + 74, curY + 4.4);
+        doc.text('DIA', margin + 104, curY + 4.4);
+        doc.text('STATUS', margin + 124, curY + 4.4);
+        doc.text('VALOR', pageW - margin - 2.5, curY + 4.4, { align: 'right' });
+        curY += 6.5;
+      };
+
+      recHeader();
+      bills.forEach((bill, idx) => {
+        if (curY + 6 > pageH - 16) {
+          ensureSpace(14);
+          recHeader();
+        }
+        const effective = getEffectiveRecurringStatus(
+          bill,
+          year,
+          safeMonth,
+          new Date(),
+          state.settings.alertLeadDays ?? 3
+        );
+        const statusText =
+          bill.active === false
+            ? 'Pausado'
+            : effective.status === 'paid'
+            ? bill.type === 'income'
+              ? 'Recebido'
+              : 'Pago'
+            : effective.status === 'overdue'
+            ? 'Atrasado'
+            : 'Pendente';
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, curY, contentW, 5.6, 'F');
+        }
+        doc.setDrawColor(...C_BORDER);
+        doc.line(margin, curY + 5.6, pageW - margin, curY + 5.6);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.2);
+        doc.setTextColor(...C_SLATE_DARK);
+        doc.text(bill.title.slice(0, 34), margin + 2.5, curY + 3.9);
+        doc.setTextColor(...(bill.type === 'income' ? C_EMERALD : C_SLATE_MUTED));
+        doc.text(bill.type === 'income' ? 'Recebimento' : 'Débito Fixo', margin + 74, curY + 3.9);
+        doc.setTextColor(...C_SLATE_MUTED);
+        doc.text(formatCompactDay(bill.dueDay), margin + 104, curY + 3.9);
+        doc.text(statusText, margin + 124, curY + 3.9);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...(bill.type === 'income' ? C_EMERALD : C_SLATE_DARK));
+        doc.text(formatBRL(bill.amount, false), pageW - margin - 2.5, curY + 3.9, {
+          align: 'right',
+        });
+        curY += 5.6;
+      });
+      curY += 6;
+    }
+  }
+
+  // Section 4: Detailed Transactions Ledger
+  if (
+    scope === 'consolidated' ||
+    scope === 'entries' ||
+    scope === 'income' ||
+    scope === 'expenses'
+  ) {
+    const entries = filterEntriesForPdf(options);
+    drawSectionTitle(
+      isEn
+        ? `Transactions Ledger (${entries.length} records)`
+        : isEs
+        ? `Movimientos Detallados (${entries.length} registros)`
+        : `Lançamentos Detalhados (${entries.length} registros)`
+    );
+
+    const entryHeader = () => {
+      doc.setFillColor(...C_OBSIDIAN);
+      doc.rect(margin, curY, contentW, 6.5, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.8);
+      doc.text('DATA', margin + 2, curY + 4.4);
+      doc.text('DESCRIÇÃO', margin + 23, curY + 4.4);
+      doc.text('CATEGORIA', margin + 84, curY + 4.4);
+      doc.text('MOD. / PARC.', margin + 122, curY + 4.4);
+      doc.text('STATUS', margin + 150, curY + 4.4);
+      doc.text('VALOR', pageW - margin - 2, curY + 4.4, { align: 'right' });
+      curY += 6.5;
+    };
+
+    entryHeader();
+    if (entries.length === 0) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(...C_SLATE_MUTED);
+      doc.text('Nenhum lançamento encontrado para os filtros selecionados.', margin + 2, curY + 5);
+      curY += 10;
+    } else {
+      entries.forEach((entry, idx) => {
+        if (curY + 6 > pageH - 16) {
+          ensureSpace(14);
+          entryHeader();
+        }
+        const row = rowMap.get(entry.rowId);
+        const inst = parseInstallmentInfo(entry);
+        const dateStr = `${String(entry.day).padStart(2, '0')}/${String(entry.month + 1).padStart(
+          2,
+          '0'
+        )}/${entry.year}`;
+        const desc = (entry.merchant || entry.description || row?.name || 'Lançamento').slice(0, 29);
+        const cat = (row?.name ?? 'OUTROS').slice(0, 18);
+        const mod = `${formatPaymentMethodLabel(entry.paymentMethod)}${
+          inst.total > 1 ? ` ${inst.current}/${inst.total}` : ''
+        }`.slice(0, 15);
+        const st = entry.status === 'paid' ? 'Pago' : entry.status === 'projected' ? 'Projetado' : 'Pendente';
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, curY, contentW, 5.5, 'F');
+        }
+        doc.setDrawColor(...C_BORDER);
+        doc.line(margin, curY + 5.5, pageW - margin, curY + 5.5);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.8);
+        doc.setTextColor(...C_SLATE_MUTED);
+        doc.text(dateStr, margin + 2, curY + 3.8);
+
+        doc.setTextColor(...C_SLATE_DARK);
+        doc.text(desc, margin + 23, curY + 3.8);
+        doc.setTextColor(...C_SLATE_MUTED);
+        doc.text(cat, margin + 84, curY + 3.8);
+        doc.text(mod, margin + 122, curY + 3.8);
+        doc.text(st, margin + 150, curY + 3.8);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...(row?.block === 'income' ? C_EMERALD : C_SLATE_DARK));
+        doc.text(formatBRL(entry.amount, false), pageW - margin - 2, curY + 3.8, {
+          align: 'right',
+        });
+        curY += 5.5;
+      });
+    }
+  }
+
+  const periodSlug =
+    period === 'month' ? `${year}-${String(safeMonth + 1).padStart(2, '0')}` : `${year}`;
+  const filename = `ORBE_Financas_PDF_${scope}_${periodSlug}.pdf`;
+  doc.save(filename);
+  return { filename };
+}
+

@@ -5,6 +5,8 @@ import {
   BankAccount,
   BlockType,
   CategoryRow,
+  CreditCardAccount,
+  CreditCardPurchase,
   EntryNature,
   MatrixTotals,
   PaymentMethod,
@@ -15,11 +17,63 @@ import {
   TransactionEntry,
 } from '../types/finance';
 import { MONTH_NAMES_SHORT } from '../data/initialData';
-import {
-  evaluateAccountHealth,
-  isDeduplicatedEntry,
-  parseInstallmentInfo,
-} from './openFinance';
+import { computeAllCreditCardsOverview } from './creditCardsEngine';
+
+export interface InstallmentParsedInfo {
+  isInstallment: boolean;
+  current: number;
+  total: number;
+  remainingCount: number;
+  installmentAmount: number;
+  remainingTotalAmount: number;
+  shortLabel: string;
+}
+
+export function isDeduplicatedEntry(entry: TransactionEntry): boolean {
+  return entry.entryNature === 'internal_transfer' || entry.entryNature === 'invoice_payment';
+}
+
+export function parseInstallmentInfo(entry: TransactionEntry): InstallmentParsedInfo {
+  let current = entry.installmentCurrent;
+  let total = entry.installmentTotal;
+
+  if ((!current || !total) && entry.installments) {
+    const match = entry.installments.match(/(\d+)\s*\/\s*(\d+)/);
+    if (match) {
+      current = parseInt(match[1], 10);
+      total = parseInt(match[2], 10);
+    }
+  }
+
+  const validCurrent = Number.isFinite(current) && (current ?? 0) >= 1 ? Math.trunc(current!) : 1;
+  const validTotal = Number.isFinite(total) && (total ?? 0) >= 1 ? Math.trunc(total!) : 1;
+
+  if (validTotal <= 1) {
+    return {
+      isInstallment: false,
+      current: 1,
+      total: 1,
+      remainingCount: 0,
+      installmentAmount: entry.amount,
+      remainingTotalAmount: 0,
+      shortLabel: 'À vista',
+    };
+  }
+
+  const clampedCurrent = Math.min(validCurrent, validTotal);
+  const remainingCount = Math.max(0, validTotal - clampedCurrent);
+  const safeAmount = Number.isFinite(entry.amount) ? entry.amount : 0;
+
+  return {
+    isInstallment: true,
+    current: clampedCurrent,
+    total: validTotal,
+    remainingCount,
+    installmentAmount: safeAmount,
+    remainingTotalAmount: Number((remainingCount * safeAmount).toFixed(2)),
+    shortLabel: `${clampedCurrent}/${validTotal}`,
+  };
+}
 
 export function formatBRL(value: number, privacyMode = false, showSign = false): string {
   if (privacyMode) {
@@ -262,7 +316,6 @@ export function computeMonthSpotlight(
       (matchingEntry ? accMap.get(matchingEntry.accountId) : undefined) ??
       accounts.find((a) => a.defaultRowId === r.id && a.type === 'Cartão de Crédito');
 
-    const health = acc ? evaluateAccountHealth(acc) : null;
     const availableLimit =
       acc?.creditLimit !== undefined
         ? Number(
@@ -274,8 +327,8 @@ export function computeMonthSpotlight(
         : undefined;
 
     let statusText = 'Sem fatura';
-    if (health && (health.effectiveStatus === 'consent_expired' || health.effectiveStatus === 'sync_error')) {
-      statusText = health.badgeLabel;
+    if (acc?.status === 'paused') {
+      statusText = 'Pausada';
     } else if (acc?.currentInvoiceStatus === 'paid') {
       statusText = 'Paga / Conciliada';
     } else if (acc?.currentInvoiceStatus === 'closed') {
@@ -296,9 +349,7 @@ export function computeMonthSpotlight(
       availableLimit,
       accountLabel: acc ? `${acc.institution} (${acc.maskedAccount})` : 'Cartão Vinculado',
       status: statusText,
-      needsReconnect: Boolean(
-        health && (health.effectiveStatus === 'consent_expired' || health.effectiveStatus === 'sync_error')
-      ),
+      needsReconnect: false,
     };
   });
 
@@ -914,26 +965,71 @@ export function buildFinancialContextSummary(state: AppState): Record<string, un
     },
     resumoMensal: monthlySummary,
     maioresDespesas: topExpenses,
-    contasBancariasConectadas: state.accounts.map((a) => {
-      const health = evaluateAccountHealth(a);
+    contasBancarias: state.accounts.map((a) => ({
+      instituicao: a.institution,
+      tipo: a.type,
+      saldo: a.balance,
+      status: a.status,
+    })),
+    cartoesCredito: (() => {
+      const overview = computeAllCreditCardsOverview(
+        state.creditCards ?? [],
+        state.cardPurchases ?? [],
+        state.paidCardInvoices ?? {},
+        year,
+        safeFocusMonth
+      );
       return {
-        instituicao: a.institution,
-        provedorOpenFinance: a.connectorProvider ?? 'Open Finance Brasil (FAPI)',
-        tipo: a.type,
-        saldoOuFatura: a.balance,
-        limiteTotal: a.creditLimit ?? null,
-        limiteDisponivel: a.availableLimit ?? null,
-        statusEfetivo: health.effectiveStatus,
-        statusLabel: health.badgeLabel,
-        consentimentoValidoAte: a.consentExpiresAt,
-        requerAcaoUsuario: health.needsAction,
-        orientacao: health.userMessage,
+        limiteTotal: overview.totalLimit,
+        limiteComprometido: overview.totalCommitted,
+        limiteLivre: overview.totalAvailable,
+        faturaTotalMes: overview.monthTotalInvoice,
+        faturaEmAbertoMes: overview.monthUnpaidInvoice,
+        comprometidoAte: overview.committedUntil?.label ?? null,
+        cartoes: overview.summaries.map((s) => ({
+          banco: s.card.bankName,
+          apelido: s.card.nickname ?? null,
+          limiteTotal: s.card.totalLimit,
+          limiteLivre: s.availableLimit,
+          limiteComprometido: s.committedLimit,
+          faturaMes: s.monthInvoiceAmount,
+          faturaPaga: s.monthInvoicePaid,
+          fechamentoDia: s.card.closingDay,
+          vencimentoDia: s.card.dueDay,
+          comprometidoAte: s.committedUntil?.label ?? null,
+        })),
       };
-    }),
+    })(),
     alertasAtivos: alerts.slice(0, 8).map((al) => ({
       severidade: al.severity,
       titulo: al.title,
       detalhe: al.description,
+    })),
+    orcamentoDisponivelMes: computeMonthlyBudgetForecast({
+      rows: state.rows,
+      entries: state.entries,
+      accounts: state.accounts,
+      recurringBills: state.recurringBills ?? [],
+      creditCards: state.creditCards ?? [],
+      cardPurchases: state.cardPurchases ?? [],
+      paidCardInvoices: state.paidCardInvoices ?? {},
+      totals,
+      year,
+      focusMonth: safeFocusMonth,
+    }),
+    itensRecorrentes: (state.recurringBills ?? []).map((b) => ({
+      nome: b.title,
+      tipo: b.type ?? 'debit',
+      valor: b.amount,
+      dia: b.dueDay,
+      ativo: b.active !== false,
+      statusMes: getEffectiveRecurringStatus(
+        b,
+        year,
+        safeFocusMonth,
+        new Date(),
+        state.settings.alertLeadDays ?? 3
+      ).status,
     })),
   };
 }
@@ -1237,10 +1333,20 @@ export function getEffectiveRecurringStatus(
   bill: RecurringBill,
   year: number,
   month: number,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  leadDays = 3
 ): { status: RecurringBillStatus; isDueSoon: boolean; daysUntilDue: number | null } {
   const key = getRecurringMonthKey(year, month);
   const stored = bill.statusByMonth?.[key];
+  const safeLead = Math.max(0, Math.min(30, Number.isFinite(leadDays) ? Math.trunc(leadDays) : 3));
+
+  if (bill.active === false) {
+    return {
+      status: stored ?? 'pending',
+      isDueSoon: false,
+      daysUntilDue: null,
+    };
+  }
 
   if (stored === 'paid') {
     return { status: 'paid', isDueSoon: false, daysUntilDue: null };
@@ -1251,10 +1357,9 @@ export function getEffectiveRecurringStatus(
   const todayDay = referenceDate.getDate();
 
   if (stored === 'overdue') {
-    return { status: 'overdue', isDueSoon: false, daysUntilDue: null };
+    return { status: 'overdue', isDueSoon: false, daysUntilDue: bill.dueDay - todayDay };
   }
 
-  // If the bill is pending (or unset), detect overdue or due soon relative to reference date
   const isPastMonth = year < todayYear || (year === todayYear && month < todayMonth);
   const isCurrentMonth = year === todayYear && month === todayMonth;
 
@@ -1266,11 +1371,349 @@ export function getEffectiveRecurringStatus(
     const diff = bill.dueDay - todayDay;
     return {
       status: 'pending',
-      isDueSoon: diff >= 0 && diff <= 3,
+      isDueSoon: diff >= 0 && diff <= safeLead,
       daysUntilDue: diff,
     };
   }
 
   return { status: 'pending', isDueSoon: false, daysUntilDue: null };
+}
+
+export interface MonthlyBudgetForecast {
+  year: number;
+  month: number;
+  categoryRowId: string | 'all';
+  currentAccountBalance: number;
+  realizedIncome: number;
+  expectedPendingIncome: number;
+  totalForecastIncome: number;
+  realizedExpense: number;
+  pendingRecurringDebits: number;
+  pendingScheduledDebits: number;
+  unpaidCardInvoices: number;
+  totalPendingCommitments: number;
+  totalForecastExpense: number;
+  safeToSpendRemaining: number;
+  projectedMonthClose: number;
+  budgetUtilizationPct: number;
+  healthStatus: 'safe' | 'attention' | 'over';
+  activeRecurringDebitCount: number;
+  activeRecurringIncomeCount: number;
+}
+
+export function computeMonthlyBudgetForecast(params: {
+  rows: CategoryRow[];
+  entries: TransactionEntry[];
+  accounts: BankAccount[];
+  recurringBills: RecurringBill[];
+  creditCards: CreditCardAccount[];
+  cardPurchases: CreditCardPurchase[];
+  paidCardInvoices: Record<string, boolean>;
+  totals: MatrixTotals;
+  year: number;
+  focusMonth: number;
+  categoryRowId?: string | 'all';
+}): MonthlyBudgetForecast {
+  const {
+    rows,
+    entries,
+    accounts,
+    recurringBills,
+    creditCards,
+    cardPurchases,
+    paidCardInvoices,
+    year,
+    focusMonth,
+    categoryRowId = 'all',
+  } = params;
+
+  const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  const rowMap = new Map(rows.map((r) => [r.id, r]));
+
+  const currentAccountBalance = Number(
+    accounts
+      .filter((a) => a.status === 'active' && a.type !== 'Cartão de Crédito')
+      .reduce((sum, a) => sum + (Number.isFinite(a.balance) ? a.balance : 0), 0)
+      .toFixed(2)
+  );
+
+  const monthEntries = entries.filter((e) => {
+    if (e.year !== year || e.month !== safeMonth) return false;
+    if (isDeduplicatedEntry(e)) return false;
+    if (categoryRowId !== 'all' && e.rowId !== categoryRowId) return false;
+    const row = rowMap.get(e.rowId);
+    return Boolean(row && !row.hidden);
+  });
+
+  let realizedIncome = 0;
+  let pendingEntryIncome = 0;
+  let realizedExpense = 0;
+  let pendingScheduledDebits = 0;
+
+  monthEntries.forEach((e) => {
+    const row = rowMap.get(e.rowId);
+    if (!row) return;
+    const amt = Number.isFinite(e.amount) ? e.amount : 0;
+    if (row.block === 'income') {
+      if (e.status === 'paid') realizedIncome += amt;
+      else pendingEntryIncome += amt;
+    } else if (row.block === 'fixed' || row.block === 'variable') {
+      if (e.status === 'paid') realizedExpense += amt;
+      else pendingScheduledDebits += amt;
+    }
+  });
+
+  let pendingRecurringIncome = 0;
+  let pendingRecurringDebits = 0;
+  let activeRecurringIncomeCount = 0;
+  let activeRecurringDebitCount = 0;
+
+  const activeBills = recurringBills.filter((b) => {
+    if (b.active === false) return false;
+    if (categoryRowId !== 'all' && b.categoryRowId !== categoryRowId) return false;
+    return true;
+  });
+
+  activeBills.forEach((bill) => {
+    const kind = bill.type ?? 'debit';
+    const eff = getEffectiveRecurringStatus(bill, year, safeMonth);
+    const amt = Number.isFinite(bill.amount) ? bill.amount : 0;
+    if (kind === 'income') {
+      activeRecurringIncomeCount += 1;
+      if (eff.status !== 'paid') {
+        pendingRecurringIncome += amt;
+      }
+    } else {
+      activeRecurringDebitCount += 1;
+      if (eff.status !== 'paid') {
+        pendingRecurringDebits += amt;
+      }
+    }
+  });
+
+  const cardsOverview =
+    categoryRowId === 'all'
+      ? computeAllCreditCardsOverview(creditCards, cardPurchases, paidCardInvoices, year, safeMonth)
+      : null;
+  const unpaidCardInvoices = cardsOverview ? cardsOverview.monthUnpaidInvoice : 0;
+
+  const expectedPendingIncome = Number((pendingEntryIncome + pendingRecurringIncome).toFixed(2));
+  const totalForecastIncome = Number((realizedIncome + expectedPendingIncome).toFixed(2));
+  const totalPendingCommitments = Number(
+    (pendingRecurringDebits + pendingScheduledDebits + unpaidCardInvoices).toFixed(2)
+  );
+  const totalForecastExpense = Number((realizedExpense + totalPendingCommitments).toFixed(2));
+
+  // Formula requested:
+  // saldoAtual + receitasPrevistasConfirmadas - gastosJaRealizados - contasFixasECompromissosPendentes
+  const safeToSpendRemaining = Number(
+    (currentAccountBalance + totalForecastIncome - realizedExpense - totalPendingCommitments).toFixed(2)
+  );
+  const projectedMonthClose = Number((totalForecastIncome - totalForecastExpense).toFixed(2));
+
+  const budgetBase = Math.max(0, currentAccountBalance + totalForecastIncome);
+  const budgetUtilizationPct =
+    budgetBase > 0
+      ? Number(Math.min(180, (totalForecastExpense / budgetBase) * 100).toFixed(1))
+      : totalForecastExpense > 0
+      ? 100
+      : 0;
+
+  let healthStatus: MonthlyBudgetForecast['healthStatus'] = 'safe';
+  if (safeToSpendRemaining < 0 || (budgetBase > 0 && budgetUtilizationPct > 100)) {
+    healthStatus = 'over';
+  } else if (budgetBase > 0 && budgetUtilizationPct >= 80) {
+    healthStatus = 'attention';
+  }
+
+  return {
+    year,
+    month: safeMonth,
+    categoryRowId,
+    currentAccountBalance,
+    realizedIncome: Number(realizedIncome.toFixed(2)),
+    expectedPendingIncome,
+    totalForecastIncome,
+    realizedExpense: Number(realizedExpense.toFixed(2)),
+    pendingRecurringDebits: Number(pendingRecurringDebits.toFixed(2)),
+    pendingScheduledDebits: Number(pendingScheduledDebits.toFixed(2)),
+    unpaidCardInvoices: Number(unpaidCardInvoices.toFixed(2)),
+    totalPendingCommitments,
+    totalForecastExpense,
+    safeToSpendRemaining,
+    projectedMonthClose,
+    budgetUtilizationPct,
+    healthStatus,
+    activeRecurringDebitCount,
+    activeRecurringIncomeCount,
+  };
+}
+
+export interface UpcomingCashflowAlert {
+  id: string;
+  kind: 'debit' | 'income';
+  sourceType: 'recurring' | 'entry' | 'card_invoice';
+  title: string;
+  categoryLabel: string;
+  amount: number;
+  day: number;
+  daysDiff: number;
+  urgency: 'overdue' | 'today' | 'soon';
+}
+
+export function computeUpcomingCashflowAlerts(params: {
+  recurringBills: RecurringBill[];
+  entries: TransactionEntry[];
+  creditCards: CreditCardAccount[];
+  cardPurchases: CreditCardPurchase[];
+  paidCardInvoices: Record<string, boolean>;
+  rows: CategoryRow[];
+  year: number;
+  focusMonth: number;
+  leadDays?: number;
+  referenceDate?: Date;
+}): UpcomingCashflowAlert[] {
+  const {
+    recurringBills,
+    entries,
+    creditCards,
+    cardPurchases,
+    paidCardInvoices,
+    rows,
+    year,
+    focusMonth,
+    leadDays = 3,
+    referenceDate = new Date(),
+  } = params;
+
+  const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  const safeLead = Math.max(0, Math.min(30, Math.trunc(leadDays)));
+  const todayYear = referenceDate.getFullYear();
+  const todayMonth = referenceDate.getMonth();
+  const todayDay = referenceDate.getDate();
+  const isCurrentMonth = year === todayYear && safeMonth === todayMonth;
+  const isPastMonth = year < todayYear || (year === todayYear && safeMonth < todayMonth);
+
+  const rowMap = new Map(rows.map((r) => [r.id, r]));
+  const alerts: UpcomingCashflowAlert[] = [];
+
+  // 1. Active recurring debits & incomes
+  recurringBills.forEach((bill) => {
+    if (bill.active === false) return;
+    const eff = getEffectiveRecurringStatus(bill, year, safeMonth, referenceDate, safeLead);
+    if (eff.status === 'paid') return;
+
+    const kind = bill.type ?? 'debit';
+    const rowName = bill.categoryRowId ? rowMap.get(bill.categoryRowId)?.name : undefined;
+    const categoryLabel = rowName ?? (kind === 'income' ? 'Recebimento Recorrente' : 'Conta Fixa');
+
+    if (eff.status === 'overdue') {
+      alerts.push({
+        id: `cf-rec-${bill.id}`,
+        kind,
+        sourceType: 'recurring',
+        title: bill.title,
+        categoryLabel,
+        amount: bill.amount,
+        day: bill.dueDay,
+        daysDiff: eff.daysUntilDue ?? -1,
+        urgency: 'overdue',
+      });
+    } else if (isCurrentMonth && eff.daysUntilDue !== null && eff.daysUntilDue >= 0 && eff.daysUntilDue <= safeLead) {
+      alerts.push({
+        id: `cf-rec-${bill.id}`,
+        kind,
+        sourceType: 'recurring',
+        title: bill.title,
+        categoryLabel,
+        amount: bill.amount,
+        day: bill.dueDay,
+        daysDiff: eff.daysUntilDue,
+        urgency: eff.daysUntilDue === 0 ? 'today' : 'soon',
+      });
+    }
+  });
+
+  // 2. Scheduled/pending transaction entries
+  entries.forEach((e) => {
+    if (e.year !== year || e.month !== safeMonth || e.status === 'paid' || isDeduplicatedEntry(e)) return;
+    const row = rowMap.get(e.rowId);
+    if (!row || row.hidden) return;
+    const kind: 'debit' | 'income' = row.block === 'income' ? 'income' : 'debit';
+    const diff = e.day - todayDay;
+    if (isPastMonth || (isCurrentMonth && diff < 0)) {
+      alerts.push({
+        id: `cf-ent-${e.id}`,
+        kind,
+        sourceType: 'entry',
+        title: e.merchant || e.description,
+        categoryLabel: row.name,
+        amount: e.amount,
+        day: e.day,
+        daysDiff: isPastMonth ? -1 : diff,
+        urgency: 'overdue',
+      });
+    } else if (isCurrentMonth && diff >= 0 && diff <= safeLead) {
+      alerts.push({
+        id: `cf-ent-${e.id}`,
+        kind,
+        sourceType: 'entry',
+        title: e.merchant || e.description,
+        categoryLabel: row.name,
+        amount: e.amount,
+        day: e.day,
+        daysDiff: diff,
+        urgency: diff === 0 ? 'today' : 'soon',
+      });
+    }
+  });
+
+  // 3. Unpaid credit card invoices due soon or overdue
+  if (creditCards.length > 0) {
+    const cardsOverview = computeAllCreditCardsOverview(
+      creditCards,
+      cardPurchases,
+      paidCardInvoices,
+      year,
+      safeMonth
+    );
+    cardsOverview.summaries.forEach((s) => {
+      if (s.monthInvoicePaid || s.monthInvoiceAmount <= 0) return;
+      const diff = s.card.dueDay - todayDay;
+      if (isPastMonth || (isCurrentMonth && diff < 0)) {
+        alerts.push({
+          id: `cf-card-${s.card.id}`,
+          kind: 'debit',
+          sourceType: 'card_invoice',
+          title: `Fatura ${s.card.nickname || s.card.bankName}`,
+          categoryLabel: 'Cartão de Crédito',
+          amount: s.monthInvoiceAmount,
+          day: s.card.dueDay,
+          daysDiff: isPastMonth ? -1 : diff,
+          urgency: 'overdue',
+        });
+      } else if (isCurrentMonth && diff >= 0 && diff <= safeLead) {
+        alerts.push({
+          id: `cf-card-${s.card.id}`,
+          kind: 'debit',
+          sourceType: 'card_invoice',
+          title: `Fatura ${s.card.nickname || s.card.bankName}`,
+          categoryLabel: 'Cartão de Crédito',
+          amount: s.monthInvoiceAmount,
+          day: s.card.dueDay,
+          daysDiff: diff,
+          urgency: diff === 0 ? 'today' : 'soon',
+        });
+      }
+    });
+  }
+
+  const urgencyWeight = { overdue: 0, today: 1, soon: 2 };
+  return alerts.sort((a, b) => {
+    if (urgencyWeight[a.urgency] !== urgencyWeight[b.urgency]) {
+      return urgencyWeight[a.urgency] - urgencyWeight[b.urgency];
+    }
+    return a.daysDiff - b.daysDiff;
+  });
 }
 

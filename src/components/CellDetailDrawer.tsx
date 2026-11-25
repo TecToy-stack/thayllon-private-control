@@ -9,8 +9,12 @@ import {
   PaymentMethod,
   TransactionEntry,
 } from '../types/finance';
-import { formatBRL, formatCompactDay } from '../utils/financeEngine';
-import { isDeduplicatedEntry, parseInstallmentInfo } from '../utils/openFinance';
+import {
+  formatBRL,
+  formatCompactDay,
+  isDeduplicatedEntry,
+  parseInstallmentInfo,
+} from '../utils/financeEngine';
 import {
   getMonthNamesFull,
   getTranslations,

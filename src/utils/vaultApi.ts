@@ -67,14 +67,47 @@ function apiUrl(path: string): string {
 
 const OFFLINE_DB_NAME = 'ThayllonPrivateOfflineAuthDB';
 const OFFLINE_STORE = 'offline_vaults';
+const OFFLINE_USERNAME_INDEX_KEY = 'tpc_offline_usernames_v1';
 
 interface OfflineVaultRecord {
   cpfId: string;
   profile: UserProfile;
   pinSalt: string;
   pinHash: string;
+  passwordSalt?: string;
+  passwordHash?: string;
   biometric: BiometricConfig & { deviceKeySalt?: string; deviceKeyHash?: string };
   appState: AppState;
+}
+
+function normalizeOfflineUsername(raw?: string): string | null {
+  if (!raw) return null;
+  const clean = raw.trim().toLowerCase();
+  return /^[a-z0-9._-]{3,32}$/.test(clean) ? clean : null;
+}
+
+function readOfflineUsernameIndex(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(OFFLINE_USERNAME_INDEX_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function setOfflineUsernameMapping(username: string | undefined, cpfId: string, prevUsername?: string): void {
+  try {
+    const idx = readOfflineUsernameIndex();
+    if (prevUsername && idx[prevUsername.toLowerCase()] === cpfId) {
+      delete idx[prevUsername.toLowerCase()];
+    }
+    if (username) {
+      idx[username.toLowerCase()] = cpfId;
+    }
+    localStorage.setItem(OFFLINE_USERNAME_INDEX_KEY, JSON.stringify(idx));
+  } catch {
+    // Ignore storage quota issues
+  }
 }
 
 function openOfflineDB(): Promise<IDBDatabase | null> {
@@ -287,6 +320,7 @@ async function mirrorServerVaultToOfflineCache(params: {
   biometric: BiometricConfig;
   appState: AppState;
   pin?: string;
+  password?: string;
   deviceKey?: string;
 }): Promise<void> {
   try {
@@ -297,6 +331,14 @@ async function mirrorServerVaultToOfflineCache(params: {
       const hashedPin = await hashSecretLocal(params.pin);
       pinSalt = hashedPin.salt;
       pinHash = hashedPin.hash;
+    }
+
+    let passwordSalt = existing?.passwordSalt;
+    let passwordHash = existing?.passwordHash;
+    if (params.password) {
+      const hashedPass = await hashSecretLocal(params.password);
+      passwordSalt = hashedPass.salt;
+      passwordHash = hashedPass.hash;
     }
 
     let bioRecord: OfflineVaultRecord['biometric'] = existing?.biometric || { enabled: false };
@@ -331,9 +373,14 @@ async function mirrorServerVaultToOfflineCache(params: {
       profile: params.profile,
       pinSalt,
       pinHash,
+      passwordSalt,
+      passwordHash,
       biometric: bioRecord,
       appState: params.appState,
     });
+    if (params.profile.username) {
+      setOfflineUsernameMapping(params.profile.username, params.profile.cpfId, existing?.profile.username);
+    }
   } catch {
     // Contingência silenciosa: não interrompe fluxo autenticado principal
   }
@@ -346,6 +393,8 @@ export async function lookupCpfVault(cpfRaw: string) {
     cpfId: string;
     maskedCpf: string;
     fullNameHint?: string;
+    usernameHint?: string;
+    hasPasswordLogin?: boolean;
     kycStatus?: KycStatus;
     biometric?: BiometricConfig;
     error?: string;
@@ -378,6 +427,59 @@ export async function lookupCpfVault(cpfRaw: string) {
     cpfId,
     maskedCpf: local.profile.maskedCpf,
     fullNameHint: local.profile.fullName,
+    usernameHint: local.profile.username,
+    hasPasswordLogin: Boolean(local.passwordHash || local.profile.hasPasswordLogin),
+    kycStatus: local.profile.kycStatus,
+    biometric: {
+      enabled: local.biometric.enabled,
+      credentialId: local.biometric.credentialId,
+      deviceLabel: local.biometric.deviceLabel,
+      mode: local.biometric.mode,
+      registeredAt: local.biometric.registeredAt,
+    },
+    source: 'offline' as const,
+  };
+}
+
+export async function lookupUsernameVault(usernameRaw: string) {
+  const normalized = normalizeOfflineUsername(usernameRaw);
+  if (!normalized) {
+    throw new Error('Usuário inválido. Use de 3 a 32 caracteres (letras, números, ., _ ou -).');
+  }
+  const server = await callServerJson<{
+    exists: boolean;
+    cpfId?: string;
+    maskedCpf?: string;
+    fullNameHint?: string;
+    usernameHint?: string;
+    hasPasswordLogin?: boolean;
+    kycStatus?: KycStatus;
+    biometric?: BiometricConfig;
+    error?: string;
+  }>('/api/auth/lookup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: normalized }),
+  });
+
+  if (server.reachable) {
+    if (!server.ok) throw new Error(server.data.error || 'Falha ao consultar usuário.');
+    return { ...server.data, source: 'server' as const };
+  }
+
+  const idx = readOfflineUsernameIndex();
+  const cpfId = idx[normalized];
+  const local = cpfId ? await readOfflineVault(cpfId) : null;
+  if (!local) {
+    return { exists: false, usernameHint: normalized, source: 'offline' as const };
+  }
+  return {
+    exists: true,
+    cpfId: local.cpfId,
+    maskedCpf: local.profile.maskedCpf,
+    fullNameHint: local.profile.fullName,
+    usernameHint: local.profile.username,
+    hasPasswordLogin: Boolean(local.passwordHash || local.profile.hasPasswordLogin),
     kycStatus: local.profile.kycStatus,
     biometric: {
       enabled: local.biometric.enabled,
@@ -396,6 +498,8 @@ export async function registerCpfVault(payload: {
   birthDate: string;
   email?: string;
   phone?: string;
+  username?: string;
+  password?: string;
   kycStatus: KycStatus;
   kycDocumentType?: KycDocumentType;
   kycDocumentLast4?: string;
@@ -429,6 +533,7 @@ export async function registerCpfVault(payload: {
       biometric: server.data.biometric,
       appState: server.data.appState,
       pin: payload.pin,
+      password: payload.password,
       deviceKey: payload.biometric.deviceKey,
     });
     return { ...server.data, source: 'server' as const };
@@ -439,6 +544,30 @@ export async function registerCpfVault(payload: {
   const cpfId = await sha256Hex(`tpc_cpf_v1:${digits}`);
   if (await readOfflineVault(cpfId)) {
     throw new Error('Este CPF já possui cofre cadastrado neste dispositivo.');
+  }
+
+  let cleanUsername: string | undefined;
+  if (payload.username?.trim()) {
+    const normalized = normalizeOfflineUsername(payload.username);
+    if (!normalized) {
+      throw new Error('Usuário deve ter de 3 a 32 caracteres (letras, números, ., _ ou -).');
+    }
+    const idx = readOfflineUsernameIndex();
+    if (idx[normalized] && idx[normalized] !== cpfId) {
+      throw new Error('Este nome de usuário já está em uso.');
+    }
+    cleanUsername = normalized;
+  }
+
+  let passwordSalt: string | undefined;
+  let passwordHash: string | undefined;
+  if (payload.password) {
+    if (payload.password.length < 6) {
+      throw new Error('A senha deve conter no mínimo 6 caracteres.');
+    }
+    const hashed = await hashSecretLocal(payload.password);
+    passwordSalt = hashed.salt;
+    passwordHash = hashed.hash;
   }
 
   const now = new Date().toISOString();
@@ -464,6 +593,8 @@ export async function registerCpfVault(payload: {
     birthDate: payload.birthDate,
     email: payload.email,
     phone: payload.phone,
+    username: cleanUsername,
+    hasPasswordLogin: Boolean(passwordHash),
     kycStatus: payload.kycStatus,
     kycDocumentType: payload.kycDocumentType,
     kycDocumentLast4: payload.kycDocumentLast4,
@@ -478,10 +609,15 @@ export async function registerCpfVault(payload: {
     profile,
     pinSalt,
     pinHash,
+    passwordSalt,
+    passwordHash,
     biometric: bioRecord,
     appState: payload.appState ?? createCleanAppState(),
   };
   await writeOfflineVault(record);
+  if (cleanUsername) {
+    setOfflineUsernameMapping(cleanUsername, cpfId);
+  }
 
   return {
     token: makeOfflineToken(cpfId),
@@ -499,9 +635,11 @@ export async function registerCpfVault(payload: {
 }
 
 export async function loginCpfVault(payload: {
-  cpf: string;
-  method: 'pin' | 'biometric';
+  cpf?: string;
+  username?: string;
+  method: 'pin' | 'biometric' | 'password';
   pin?: string;
+  password?: string;
   credentialId?: string;
   deviceKey?: string;
 }) {
@@ -525,15 +663,25 @@ export async function loginCpfVault(payload: {
       biometric: server.data.biometric,
       appState: server.data.appState,
       pin: payload.method === 'pin' ? payload.pin : undefined,
+      password: payload.method === 'password' ? payload.password : undefined,
       deviceKey: payload.method === 'biometric' ? payload.deviceKey : undefined,
     });
     return { ...server.data, source: 'server' as const };
   }
 
-  const digits = cleanCPF(payload.cpf);
-  const cpfId = await sha256Hex(`tpc_cpf_v1:${digits}`);
-  const local = await readOfflineVault(cpfId);
-  if (!local) throw new Error('Conta não localizada neste dispositivo offline.');
+  let cpfId: string | null = null;
+  const digits = payload.cpf ? cleanCPF(payload.cpf) : '';
+  if (digits.length === 11) {
+    cpfId = await sha256Hex(`tpc_cpf_v1:${digits}`);
+  } else if (payload.username) {
+    const normalized = normalizeOfflineUsername(payload.username);
+    if (normalized) {
+      cpfId = readOfflineUsernameIndex()[normalized] ?? null;
+    }
+  }
+
+  const local = cpfId ? await readOfflineVault(cpfId) : null;
+  if (!local || !cpfId) throw new Error('Conta não localizada neste dispositivo offline.');
 
   if (payload.method === 'biometric') {
     if (
@@ -548,6 +696,14 @@ export async function loginCpfVault(payload: {
     const check = await hashSecretLocal(payload.deviceKey, local.biometric.deviceKeySalt);
     if (check.hash !== local.biometric.deviceKeyHash) {
       throw new Error('Chave biométrica inválida.');
+    }
+  } else if (payload.method === 'password') {
+    if (!payload.password || !local.passwordSalt || !local.passwordHash) {
+      throw new Error('Senha não configurada ou inválida neste dispositivo.');
+    }
+    const check = await hashSecretLocal(payload.password, local.passwordSalt);
+    if (check.hash !== local.passwordHash) {
+      throw new Error('Usuário ou senha incorretos. Tente novamente.');
     }
   } else {
     if (!payload.pin) throw new Error('Informe o PIN.');
@@ -574,7 +730,13 @@ export async function loginCpfVault(payload: {
 
 export async function unlockCpfVault(
   authToken: string,
-  payload: { method: 'pin' | 'biometric'; pin?: string; credentialId?: string; deviceKey?: string }
+  payload: {
+    method: 'pin' | 'biometric' | 'password';
+    pin?: string;
+    password?: string;
+    credentialId?: string;
+    deviceKey?: string;
+  }
 ) {
   const offlineCpfId = parseOfflineToken(authToken);
   if (!offlineCpfId) {
@@ -588,7 +750,7 @@ export async function unlockCpfVault(
     });
 
     if (server.reachable) {
-      if (!server.ok) throw new Error(server.data.error || 'PIN ou biometria incorretos.');
+      if (!server.ok) throw new Error(server.data.error || 'Credencial incorreta.');
       return true;
     }
   }
@@ -611,6 +773,17 @@ export async function unlockCpfVault(
     const check = await hashSecretLocal(payload.deviceKey, local.biometric.deviceKeySalt);
     if (check.hash !== local.biometric.deviceKeyHash) {
       throw new Error('Falha na validação biométrica.');
+    }
+    return true;
+  }
+
+  if (payload.method === 'password') {
+    if (!payload.password || !local.passwordSalt || !local.passwordHash) {
+      throw new Error('Senha não configurada neste dispositivo.');
+    }
+    const check = await hashSecretLocal(payload.password, local.passwordSalt);
+    if (check.hash !== local.passwordHash) {
+      throw new Error('Senha incorreta. Tente novamente.');
     }
     return true;
   }
@@ -700,11 +873,89 @@ export async function updateVaultKyc(
   return local.profile;
 }
 
+export async function updateVaultProfile(
+  authToken: string,
+  payload: {
+    fullName?: string;
+    birthDate?: string;
+    email?: string;
+    phone?: string;
+    username?: string;
+  }
+): Promise<UserProfile> {
+  const offlineCpfId = parseOfflineToken(authToken);
+  if (!offlineCpfId) {
+    const server = await callServerJson<{ profile: UserProfile; error?: string }>('/api/vault/profile', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (server.reachable) {
+      if (!server.ok) throw new Error(server.data.error || 'Erro ao atualizar dados cadastrais.');
+      const local = await readOfflineVault(server.data.profile.cpfId);
+      if (local) {
+        const prevUsername = local.profile.username;
+        local.profile = server.data.profile;
+        await writeOfflineVault(local);
+        setOfflineUsernameMapping(local.profile.username, local.cpfId, prevUsername);
+      }
+      return server.data.profile;
+    }
+  }
+
+  if (!offlineCpfId) throw new Error('Servidor indisponível para atualizar dados cadastrais.');
+  const local = await readOfflineVault(offlineCpfId);
+  if (!local) throw new Error('Cofre local não localizado.');
+  const now = new Date().toISOString();
+  const prevUsername = local.profile.username;
+
+  if (payload.fullName !== undefined) {
+    const trimmed = payload.fullName.trim();
+    if (trimmed.length < 3) throw new Error('Nome completo deve ter ao menos 3 caracteres.');
+    local.profile.fullName = trimmed;
+  }
+  if (payload.birthDate !== undefined) {
+    local.profile.birthDate = payload.birthDate;
+  }
+  if (payload.email !== undefined) {
+    local.profile.email = payload.email.trim() || undefined;
+  }
+  if (payload.phone !== undefined) {
+    local.profile.phone = payload.phone.trim() || undefined;
+  }
+  if (payload.username !== undefined) {
+    const rawUser = payload.username.trim();
+    if (!rawUser) {
+      local.profile.username = undefined;
+      setOfflineUsernameMapping(undefined, local.cpfId, prevUsername);
+    } else {
+      const normalized = normalizeOfflineUsername(rawUser);
+      if (!normalized) throw new Error('Usuário deve ter de 3 a 32 caracteres (a-z, 0-9, ., _ ou -).');
+      const idx = readOfflineUsernameIndex();
+      if (idx[normalized] && idx[normalized] !== local.cpfId) {
+        throw new Error('Este nome de usuário já está em uso.');
+      }
+      local.profile.username = normalized;
+      setOfflineUsernameMapping(normalized, local.cpfId, prevUsername);
+    }
+  }
+
+  local.profile.updatedAt = now;
+  await writeOfflineVault(local);
+  return local.profile;
+}
+
 export async function updateVaultSecurity(
   authToken: string,
   payload: {
     currentPin?: string;
+    currentPassword?: string;
     newPin?: string;
+    username?: string;
+    newPassword?: string;
     biometric?: {
       enabled: boolean;
       credentialId?: string;
@@ -737,6 +988,7 @@ export async function updateVaultSecurity(
           biometric: server.data.biometric,
           appState: local.appState,
           pin: payload.newPin,
+          password: payload.newPassword,
           deviceKey: payload.biometric?.deviceKey,
         });
       }
@@ -749,14 +1001,50 @@ export async function updateVaultSecurity(
   if (!local) throw new Error('Cofre local não localizado.');
   const now = new Date().toISOString();
 
+  const verifyOfflineChallenge = async () => {
+    if (payload.currentPin) {
+      const checkPin = await hashSecretLocal(payload.currentPin, local.pinSalt);
+      if (checkPin.hash === local.pinHash) return true;
+    }
+    if (payload.currentPassword && local.passwordSalt && local.passwordHash) {
+      const checkPass = await hashSecretLocal(payload.currentPassword, local.passwordSalt);
+      if (checkPass.hash === local.passwordHash) return true;
+    }
+    return false;
+  };
+
   if (payload.newPin !== undefined) {
-    const check = await hashSecretLocal(payload.currentPin || '', local.pinSalt);
-    if (check.hash !== local.pinHash) {
-      throw new Error('PIN atual incorreto para alterar o PIN.');
+    if (!(await verifyOfflineChallenge())) {
+      throw new Error('PIN ou senha atual incorreto para alterar o PIN.');
     }
     const next = await hashSecretLocal(payload.newPin);
     local.pinSalt = next.salt;
     local.pinHash = next.hash;
+  }
+
+  if (payload.username !== undefined && payload.username.trim()) {
+    const normalized = normalizeOfflineUsername(payload.username);
+    if (!normalized) throw new Error('Usuário inválido. Use de 3 a 32 caracteres.');
+    const idx = readOfflineUsernameIndex();
+    if (idx[normalized] && idx[normalized] !== local.cpfId) {
+      throw new Error('Este nome de usuário já está em uso.');
+    }
+    const prevUsername = local.profile.username;
+    local.profile.username = normalized;
+    setOfflineUsernameMapping(normalized, local.cpfId, prevUsername);
+  }
+
+  if (payload.newPassword !== undefined) {
+    if (!(await verifyOfflineChallenge())) {
+      throw new Error('Informe seu PIN ou senha atual para definir a senha.');
+    }
+    if (payload.newPassword.length < 6) {
+      throw new Error('A senha deve conter no mínimo 6 caracteres.');
+    }
+    const nextPass = await hashSecretLocal(payload.newPassword);
+    local.passwordSalt = nextPass.salt;
+    local.passwordHash = nextPass.hash;
+    local.profile.hasPasswordLogin = true;
   }
 
   if (payload.biometric !== undefined) {
@@ -820,6 +1108,14 @@ export async function fetchLatestServerBackup(authToken: string): Promise<{
   available: boolean;
   lastAutoBackupAt?: string;
   nextAutoBackupAt?: string;
+  snapshotCount?: number;
+  snapshots?: Array<{
+    id: string;
+    savedAt: string;
+    source: 'auto_24h' | 'manual';
+    sizeBytes: number;
+    state: AppState;
+  }>;
   lastBackup?: {
     id: string;
     savedAt: string;
@@ -827,12 +1123,20 @@ export async function fetchLatestServerBackup(authToken: string): Promise<{
   } | null;
 }> {
   if (!authToken || parseOfflineToken(authToken)) {
-    return { available: false, lastBackup: null };
+    return { available: false, snapshots: [], lastBackup: null };
   }
   const server = await callServerJson<{
     available: boolean;
     lastAutoBackupAt?: string;
     nextAutoBackupAt?: string;
+    snapshotCount?: number;
+    snapshots?: Array<{
+      id: string;
+      savedAt: string;
+      source: 'auto_24h' | 'manual';
+      sizeBytes: number;
+      state: AppState;
+    }>;
     lastBackup?: { id: string; savedAt: string; state: AppState } | null;
   }>('/api/vault/backup/latest', {
     method: 'GET',
@@ -841,7 +1145,7 @@ export async function fetchLatestServerBackup(authToken: string): Promise<{
     },
   });
   if (!server.reachable || !server.ok) {
-    return { available: false, lastBackup: null };
+    return { available: false, snapshots: [], lastBackup: null };
   }
   return server.data;
 }

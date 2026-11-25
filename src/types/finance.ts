@@ -3,7 +3,7 @@ export type BlockType = 'income' | 'fixed' | 'variable' | 'savings';
 export type NavTab =
   | 'matrix'
   | 'timeline'
-  | 'openfinance'
+  | 'cards'
   | 'accounts'
   | 'investments'
   | 'assistant'
@@ -25,6 +25,8 @@ export interface UserProfile {
   birthDate: string;
   email?: string;
   phone?: string;
+  username?: string;
+  hasPasswordLogin?: boolean;
   kycStatus: KycStatus;
   kycDocumentType?: KycDocumentType;
   kycDocumentLast4?: string;
@@ -76,14 +78,7 @@ export interface TransactionEntry {
 }
 
 export type AccountType = 'Corrente' | 'Digital' | 'Cartão de Crédito';
-export type AccountStatus =
-  | 'active'
-  | 'paused'
-  | 'pending_bank_confirmation'
-  | 'consent_expired'
-  | 'sync_error'
-  | 'revoked';
-export type ConnectorProvider = 'Open Finance Brasil (FAPI)' | 'Pluggy' | 'Belvo';
+export type AccountStatus = 'active' | 'paused';
 export type InvoiceState = 'open' | 'closed' | 'paid';
 
 export interface BankAccount {
@@ -97,12 +92,7 @@ export interface BankAccount {
   color: string;
   status: AccountStatus;
   statusMessage?: string;
-  connectorProvider?: ConnectorProvider;
   lastSync: string;
-  consentGrantedAt?: string;
-  consentExpiresAt: string;
-  consentScope: string[];
-  pkceChallengeId: string;
   maskedAccount: string;
   defaultRowId?: string;
   creditLimit?: number;
@@ -110,9 +100,31 @@ export interface BankAccount {
   invoiceClosingDay?: number;
   invoiceDueDay?: number;
   currentInvoiceStatus?: InvoiceState;
-  revokedAt?: string;
-  externalConsentId?: string;
-  externalItemId?: string;
+}
+
+export interface CreditCardAccount {
+  id: string;
+  bankId: string;
+  bankName: string;
+  bankColor: string;
+  bankCategory?: string;
+  nickname?: string;
+  last4?: string;
+  totalLimit: number;
+  closingDay: number; // 1..31
+  dueDay: number; // 1..31
+  createdAt: string;
+}
+
+export interface CreditCardPurchase {
+  id: string;
+  cardId: string;
+  description: string;
+  totalAmount: number;
+  installments: number; // 1..24
+  purchaseDate: string; // YYYY-MM-DD
+  category: string;
+  createdAt: string;
 }
 
 export interface AutoRule {
@@ -165,17 +177,21 @@ export interface AppSettings {
   syncFrequencyMinutes: number;
   anomalyThresholdPct: number;
   notificationsEnabled: boolean;
+  alertLeadDays?: number;
   lockOnBackground?: boolean;
 }
 
 export type RecurringBillStatus = 'paid' | 'pending' | 'overdue';
+export type RecurringItemType = 'debit' | 'income';
 
 export interface RecurringBill {
   id: string;
   title: string;
+  type?: RecurringItemType;
   amount: number;
   dueDay: number; // 1..31
   categoryRowId?: string;
+  active?: boolean;
   statusByMonth: Record<string, RecurringBillStatus>; // key: "YYYY-MM", e.g. "2026-10"
   notes?: string;
   createdAt: string;
@@ -205,7 +221,9 @@ export interface AppState {
   rows: CategoryRow[];
   entries: TransactionEntry[];
   accounts: BankAccount[];
-  revokedConsents?: BankAccount[];
+  creditCards?: CreditCardAccount[];
+  cardPurchases?: CreditCardPurchase[];
+  paidCardInvoices?: Record<string, boolean>;
   rules: AutoRule[];
   goals: SavingsGoal[];
   recurringBills?: RecurringBill[];

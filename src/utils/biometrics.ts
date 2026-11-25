@@ -198,7 +198,7 @@ async function promptNativeBiometric(subtitle: string): Promise<void> {
       cancelTitle: 'Usar PIN',
       allowDeviceCredential: true,
       iosFallbackTitle: 'Usar PIN',
-      androidTitle: 'Thayllon Private Control',
+      androidTitle: 'ORBE Finanças',
       androidSubtitle: subtitle,
       androidConfirmationRequired: false,
       androidBiometryStrength: AndroidBiometryStrength.weak,
@@ -244,11 +244,11 @@ export async function enrollBiometricForCpf(
       const cred = (await navigator.credentials.create({
         publicKey: {
           challenge,
-          rp: { name: 'Thayllon Private Control' },
+          rp: { name: 'ORBE Finanças' },
           user: {
             id: userId,
             name: `cpf-${cpfId.slice(0, 8)}`,
-            displayName: fullName || 'Titular Thayllon Private',
+            displayName: fullName || 'Titular ORBE Finanças',
           },
           pubKeyCredParams: [
             { type: 'public-key', alg: -7 },

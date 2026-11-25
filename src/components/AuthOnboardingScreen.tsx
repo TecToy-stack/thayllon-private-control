@@ -16,6 +16,8 @@ import {
   Eye,
   EyeOff,
   Trash2,
+  KeyRound,
+  UserCheck,
 } from 'lucide-react';
 import {
   AppLanguage,
@@ -37,13 +39,19 @@ import {
 } from '../utils/biometrics';
 import { createCleanAppState } from '../data/initialData';
 import {
+  clearCadastralDraft,
   clearRememberedCpf,
+  clearRememberedUsername,
+  loadCadastralDraft,
   loadLastCpfHint,
   loadLastCpfPrivacyMask,
   loadRememberedCpf,
+  loadRememberedUsername,
   RememberedCpfRecord,
+  saveCadastralDraft,
   saveLastCpfPrivacyMask,
   saveRememberedCpf,
+  saveRememberedUsername,
 } from '../utils/localVault';
 import { lookupCpfVault, loginCpfVault, registerCpfVault } from '../utils/vaultApi';
 
@@ -61,6 +69,8 @@ interface LookupResult {
   cpfId: string;
   maskedCpf: string;
   fullNameHint?: string;
+  usernameHint?: string;
+  hasPasswordLogin?: boolean;
   kycStatus?: KycStatus;
   biometric?: BiometricConfig;
   source?: 'server' | 'offline';
@@ -81,6 +91,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
     loadRememberedCpf()
   );
   const [stage, setStage] = useState<'cpf' | 'login' | 'register'>('cpf');
+  const [authMode, setAuthMode] = useState<'cpf' | 'credentials'>('cpf');
   const [cpfInput, setCpfInput] = useState(() => loadRememberedCpf()?.formattedCpf ?? '');
   const [maskSavedCpf, setMaskSavedCpf] = useState(() => loadLastCpfPrivacyMask());
   const [isCpfFocused, setIsCpfFocused] = useState(false);
@@ -91,19 +102,26 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
   const [bioAvailability, setBioAvailability] = useState<BiometryAvailabilityInfo | null>(null);
   const cpfInputRef = useRef<HTMLInputElement>(null);
 
-  // Login State
+  // Credentials Login State (Stage 1 & Stage 2)
+  const [credUsername, setCredUsername] = useState(() => loadRememberedUsername());
+  const [credPassword, setCredPassword] = useState('');
+  const [rememberUsername, setRememberUsername] = useState(true);
+  const [loginMethod, setLoginMethod] = useState<'pin' | 'password'>('pin');
   const [loginPin, setLoginPin] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
 
-  // Register 3-step Wizard State
+  // Register 3-step Wizard State (pre-filled from saved cadastral draft if present)
+  const initialDraft = loadCadastralDraft();
+  const [hasPrefilledDraft, setHasPrefilledDraft] = useState(() => Boolean(initialDraft?.fullName));
   const [regStep, setRegStep] = useState<1 | 2 | 3>(1);
-  const [fullName, setFullName] = useState('');
-  const [birthDate, setBirthDate] = useState('');
-  const [email, setEmail] = useState('');
-  const [phone, setPhone] = useState('');
+  const [fullName, setFullName] = useState(() => initialDraft?.fullName ?? '');
+  const [birthDate, setBirthDate] = useState(() => initialDraft?.birthDate ?? '');
+  const [email, setEmail] = useState(() => initialDraft?.email ?? '');
+  const [phone, setPhone] = useState(() => initialDraft?.phone ?? '');
 
   // KYC Step State
-  const [docType, setDocType] = useState<KycDocumentType>('CNH');
-  const [docLast4, setDocLast4] = useState('');
+  const [docType, setDocType] = useState<KycDocumentType>(() => initialDraft?.kycDocumentType ?? 'CNH');
+  const [docLast4, setDocLast4] = useState(() => initialDraft?.kycDocumentLast4 ?? '');
   const [kycStatus, setKycStatus] = useState<KycStatus>('pending');
   const [kycAnimating, setKycAnimating] = useState(false);
   const kycTimerRef = useRef<number | null>(null);
@@ -128,6 +146,9 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
   // Security Setup State
   const [regPin, setRegPin] = useState('');
   const [regPinConfirm, setRegPinConfirm] = useState('');
+  const [regUsername, setRegUsername] = useState(() => initialDraft?.username ?? '');
+  const [regPassword, setRegPassword] = useState('');
+  const [regPasswordConfirm, setRegPasswordConfirm] = useState('');
   const [enableBiometric, setEnableBiometric] = useState(true);
 
   const lastHint = rememberedCpf?.maskedCpf || loadLastCpfHint();
@@ -156,6 +177,8 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
       setLookup(data as LookupResult);
       if (data.exists) {
         setLoginPin('');
+        setLoginPassword('');
+        setLoginMethod('pin');
         if (data.source === 'offline') {
           setInfoNotice(
             'Servidor indisponível no momento. Conta localizada no cache seguro deste aparelho.'
@@ -168,6 +191,17 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
             'Servidor de sincronização inacessível agora. Se você já tinha conta em outro aparelho ou antes de reinstalar, conecte-se à internet ou importe seu backup JSON em Configurações.'
           );
         }
+        const draft = loadCadastralDraft();
+        if (draft) {
+          setFullName((prev) => prev || draft.fullName);
+          setBirthDate((prev) => prev || draft.birthDate);
+          setEmail((prev) => prev || draft.email || '');
+          setPhone((prev) => prev || draft.phone || '');
+          setRegUsername((prev) => prev || draft.username || '');
+          if (draft.kycDocumentType) setDocType(draft.kycDocumentType);
+          if (draft.kycDocumentLast4) setDocLast4((prev) => prev || draft.kycDocumentLast4 || '');
+          setHasPrefilledDraft(Boolean(draft.fullName));
+        }
         setRegStep(1);
         setKycStatus('pending');
         setStage('register');
@@ -179,9 +213,67 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
     }
   };
 
+  const persistSessionProfileCadastral = (profile: UserProfile) => {
+    saveCadastralDraft({
+      fullName: profile.fullName,
+      birthDate: profile.birthDate,
+      email: profile.email,
+      phone: profile.phone,
+      username: profile.username,
+      kycDocumentType: profile.kycDocumentType,
+      kycDocumentLast4: profile.kycDocumentLast4,
+    });
+    if (profile.username && rememberUsername) {
+      saveRememberedUsername(profile.username);
+    }
+  };
+
   const handleCpfLookup = async (e: React.FormEvent) => {
     e.preventDefault();
     await runCpfLookup(cpfDigits);
+  };
+
+  const handleCredentialsLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const cleanUser = credUsername.trim().toLowerCase();
+    if (cleanUser.length < 3) {
+      setError('Informe seu nome de usuário cadastrado.');
+      return;
+    }
+    if (credPassword.length < 4) {
+      setError('Informe sua senha de acesso.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const data = await loginCpfVault({
+        username: cleanUser,
+        method: 'password',
+        password: credPassword,
+      });
+
+      if (rememberUsername) {
+        saveRememberedUsername(cleanUser);
+      } else {
+        clearRememberedUsername();
+      }
+      persistSessionProfileCadastral(data.profile);
+
+      onAuthenticated({
+        token: data.token,
+        cpfId: data.profile.cpfId,
+        profile: data.profile,
+        biometric: data.biometric,
+        appState: data.appState,
+        restoredFromServer: data.source === 'server',
+      });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Usuário ou senha inválidos.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleClearCpfInput = (forgetDeviceRecord = false) => {
@@ -204,10 +296,41 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
     saveLastCpfPrivacyMask(next);
   };
 
-  const handlePinLogin = async (e: React.FormEvent) => {
+  const handlePinOrPasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!lookup) return;
     setError(null);
+
+    if (loginMethod === 'password') {
+      if (loginPassword.length < 4) {
+        setError('Digite sua senha de acesso.');
+        return;
+      }
+      setLoading(true);
+      try {
+        const data = await loginCpfVault({
+          cpf: cpfDigits,
+          method: 'password',
+          password: loginPassword,
+        });
+        const saved = saveRememberedCpf(cpfDigits);
+        if (saved) setRememberedCpf(saved);
+        persistSessionProfileCadastral(data.profile);
+        onAuthenticated({
+          token: data.token,
+          cpfId: data.profile.cpfId,
+          profile: data.profile,
+          biometric: data.biometric,
+          appState: data.appState,
+          restoredFromServer: data.source === 'server',
+        });
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Senha incorreta.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
 
     if (!/^\d{4,6}$/.test(loginPin.trim())) {
       setError('Digite seu PIN de 4 a 6 dígitos.');
@@ -224,6 +347,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
 
       const saved = saveRememberedCpf(cpfDigits);
       if (saved) setRememberedCpf(saved);
+      persistSessionProfileCadastral(data.profile);
       onAuthenticated({
         token: data.token,
         cpfId: data.profile.cpfId,
@@ -264,6 +388,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
 
       const saved = saveRememberedCpf(cpfDigits);
       if (saved) setRememberedCpf(saved);
+      persistSessionProfileCadastral(data.profile);
       onAuthenticated({
         token: data.token,
         cpfId: data.profile.cpfId,
@@ -310,6 +435,18 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
       setError('A confirmação do PIN não confere.');
       return;
     }
+    if (regPassword && regPassword.length < 6) {
+      setError('A senha de acesso deve conter no mínimo 6 caracteres.');
+      return;
+    }
+    if (regPassword && regPassword !== regPasswordConfirm) {
+      setError('A confirmação da senha não confere.');
+      return;
+    }
+    if (regPassword && !regUsername.trim()) {
+      setError('Informe um nome de usuário para ativar o login por Usuário e Senha.');
+      return;
+    }
 
     setLoading(true);
     try {
@@ -343,6 +480,8 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
         birthDate,
         email: email.trim() || undefined,
         phone: phone.trim() || undefined,
+        username: regUsername.trim() || undefined,
+        password: regPassword || undefined,
         kycStatus,
         kycDocumentType: docType,
         kycDocumentLast4: docLast4.replace(/\D/g, '').slice(-4),
@@ -353,6 +492,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
 
       const saved = saveRememberedCpf(cpfDigits);
       if (saved) setRememberedCpf(saved);
+      persistSessionProfileCadastral(data.profile);
       onAuthenticated({
         token: data.token,
         cpfId: data.profile.cpfId,
@@ -378,7 +518,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
   const renderKycBadge = (status?: KycStatus) => {
     if (status === 'verified') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30">
           <CheckCircle2 className="h-3 w-3" />
           {t.settings.security.verified} (KYC)
         </span>
@@ -386,14 +526,14 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
     }
     if (status === 'under_review') {
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-amber-500/10 text-amber-300 border border-amber-500/30">
+        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30">
           <RefreshCw className="h-3 w-3 animate-spin" />
           {t.settings.security.underReview}
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-slate-500/15 text-slate-300 border border-white/10">
+      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 dark:bg-slate-500/15 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-white/10">
         <Clock className="h-3 w-3" />
         {t.settings.security.pending}
       </span>
@@ -401,166 +541,277 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-[#090D16] text-slate-100 flex flex-col justify-center items-center p-4 sm:p-6">
+    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#090D16] text-slate-900 dark:text-slate-100 flex flex-col justify-center items-center px-safe sm:p-6 pt-safe-screen pb-safe-nav">
       <div className="w-full max-w-lg space-y-6">
-        {/* Private Banking Brand Header */}
+        {/* Brand Header */}
         <div className="text-center space-y-2">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#111827] border border-[#C9A86A]/40 text-sm font-semibold tracking-wider text-[#C9A86A] shadow-lg">
-            TC
+          <div className="mx-auto flex h-16 w-16 items-center justify-center">
+            <img
+              src="/orbe-logo-dark.png"
+              alt="ORBE Finanças"
+              className="h-16 w-16 object-contain dark:hidden"
+            />
+            <img
+              src="/orbe-logo.png"
+              alt="ORBE Finanças"
+              className="hidden h-16 w-16 object-contain dark:block"
+            />
           </div>
-          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-white">
-            Thayllon Private Control <span className="text-[#C9A86A] font-mono">CF 2026+</span>
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">
+            ORBE Finanças
           </h1>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
             {t.auth.brandSubtitle}
           </p>
         </div>
 
         {/* Main Card */}
-        <div className="rounded-2xl bg-[#111827] border border-white/[0.09] shadow-2xl overflow-hidden">
-          {/* STAGE 1: CPF IDENTIFICATION */}
+        <div className="rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.09] shadow-xl overflow-hidden">
+          {/* STAGE 1: CPF OR USERNAME+PASSWORD IDENTIFICATION */}
           {stage === 'cpf' && (
-            <form onSubmit={handleCpfLookup} className="p-6 sm:p-8 space-y-5">
+            <div className="p-6 sm:p-8 space-y-5">
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-[#C9A86A] font-semibold">
+                <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold">
                   {t.auth.stageCpfKicker}
                 </div>
-                <h2 className="mt-1 text-lg font-semibold text-white">
-                  {t.auth.stageCpfTitle}
+                <h2 className="mt-1 text-lg font-semibold text-slate-900 dark:text-white">
+                  {authMode === 'credentials' ? 'Entrar com Usuário e Senha' : t.auth.stageCpfTitle}
                 </h2>
-                <p className="mt-1 text-xs text-slate-400 leading-relaxed">
-                  {t.auth.stageCpfDesc}
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {authMode === 'credentials'
+                    ? 'Use seu nome de usuário e senha salvos no cofre ou no gerenciador de senhas do dispositivo.'
+                    : t.auth.stageCpfDesc}
                 </p>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <label className="block text-xs font-medium text-slate-300">
-                    {t.auth.cpfLabel}
-                  </label>
-                  <div className="flex items-center gap-2">
-                    {rememberedCpf && cpfDigits === rememberedCpf.cpfDigits && (
-                      <button
-                        type="button"
-                        onClick={handleToggleCpfMask}
-                        className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-[#E5C88F] transition-colors"
-                        title={maskSavedCpf ? t.auth.revealCpf : t.auth.maskCpf}
-                      >
-                        {maskSavedCpf ? (
-                          <>
-                            <Eye className="h-3 w-3" />
-                            <span>{t.auth.revealCpf}</span>
-                          </>
-                        ) : (
-                          <>
-                            <EyeOff className="h-3 w-3" />
-                            <span>{t.auth.maskCpf}</span>
-                          </>
-                        )}
-                      </button>
-                    )}
-                    {cpfInput.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => handleClearCpfInput(false)}
-                        className="text-[11px] text-slate-400 hover:text-white transition-colors"
-                      >
-                        {t.auth.clearSwitchCpf}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <input
-                  ref={cpfInputRef}
-                  type="text"
-                  inputMode="numeric"
-                  autoFocus={!rememberedCpf}
-                  value={isShowingMaskedValue ? rememberedCpf!.maskedCpf : cpfInput}
-                  onFocus={() => setIsCpfFocused(true)}
-                  onBlur={() => setIsCpfFocused(false)}
-                  onChange={(e) => {
-                    setCpfInput(formatCPF(e.target.value));
+              <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('cpf');
                     setError(null);
                   }}
-                  placeholder="000.000.000-00"
-                  maxLength={14}
-                  className="w-full px-4 py-3 rounded-xl text-base font-mono tabular-nums tracking-wider bg-[#090D16] border border-white/[0.12] text-white focus:outline-none focus:ring-2 focus:ring-[#C9A86A]/60"
-                />
-
-                <div className="mt-2 flex items-center justify-between text-[11px]">
-                  {cpfDigits.length === 0 ? (
-                    <span className="text-slate-500">
-                      {t.auth.cpfHintEmpty}
-                    </span>
-                  ) : cpfDigits.length < 11 ? (
-                    <span className="text-slate-400 font-mono">
-                      {cpfDigits.length}/11 {t.auth.cpfDigitsCount}
-                    </span>
-                  ) : cpfValid ? (
-                    <span className="text-emerald-400 inline-flex items-center gap-1">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      {rememberedCpf && cpfDigits === rememberedCpf.cpfDigits
-                        ? t.auth.cpfRememberedReady
-                        : t.auth.cpfValid}
-                    </span>
-                  ) : (
-                    <span className="text-red-400 inline-flex items-center gap-1">
-                      <AlertCircle className="h-3.5 w-3.5" />
-                      {t.auth.cpfInvalidCheck}
-                    </span>
-                  )}
-                </div>
+                  className={`py-2 rounded-lg text-xs font-medium transition-colors ${
+                    authMode === 'cpf'
+                      ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 font-semibold shadow-xs'
+                      : 'text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  CPF (Biometria / PIN)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('credentials');
+                    setError(null);
+                  }}
+                  className={`py-2 rounded-lg text-xs font-medium transition-colors inline-flex items-center justify-center gap-1.5 ${
+                    authMode === 'credentials'
+                      ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 font-semibold shadow-xs'
+                      : 'text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  <KeyRound className="h-3.5 w-3.5" />
+                  <span>Usuário e Senha</span>
+                </button>
               </div>
 
-              {lastHint && (
-                <div className="p-3.5 rounded-xl bg-[#0D1320] border border-white/[0.08] text-[11px] text-slate-300 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-slate-400">{t.auth.lastVaultDevice}</span>
-                    <span className="font-mono text-[#E5C88F]">{lastHint}</span>
+              {authMode === 'cpf' ? (
+                <form onSubmit={handleCpfLookup} className="space-y-5">
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        {t.auth.cpfLabel}
+                      </label>
+                      <div className="flex items-center gap-2">
+                        {rememberedCpf && cpfDigits === rememberedCpf.cpfDigits && (
+                          <button
+                            type="button"
+                            onClick={handleToggleCpfMask}
+                            className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                            title={maskSavedCpf ? t.auth.revealCpf : t.auth.maskCpf}
+                          >
+                            {maskSavedCpf ? (
+                              <>
+                                <Eye className="h-3 w-3" />
+                                <span>{t.auth.revealCpf}</span>
+                              </>
+                            ) : (
+                              <>
+                                <EyeOff className="h-3 w-3" />
+                                <span>{t.auth.maskCpf}</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                        {cpfInput.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleClearCpfInput(false)}
+                            className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
+                          >
+                            {t.auth.clearSwitchCpf}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <input
+                      ref={cpfInputRef}
+                      type="text"
+                      inputMode="numeric"
+                      autoFocus={!rememberedCpf}
+                      value={isShowingMaskedValue ? rememberedCpf!.maskedCpf : cpfInput}
+                      onFocus={() => setIsCpfFocused(true)}
+                      onBlur={() => setIsCpfFocused(false)}
+                      onChange={(e) => {
+                        setCpfInput(formatCPF(e.target.value));
+                        setError(null);
+                      }}
+                      placeholder="000.000.000-00"
+                      maxLength={14}
+                      className="w-full px-4 py-3 rounded-xl text-base font-mono tabular-nums tracking-wider bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                    />
+
+                    <div className="mt-2 flex items-center justify-between text-[11px]">
+                      {cpfDigits.length === 0 ? (
+                        <span className="text-slate-500">
+                          {t.auth.cpfHintEmpty}
+                        </span>
+                      ) : cpfDigits.length < 11 ? (
+                        <span className="text-slate-500 dark:text-slate-400 font-mono">
+                          {cpfDigits.length}/11 {t.auth.cpfDigitsCount}
+                        </span>
+                      ) : cpfValid ? (
+                        <span className="text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1 font-medium">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          {rememberedCpf && cpfDigits === rememberedCpf.cpfDigits
+                            ? t.auth.cpfRememberedReady
+                            : t.auth.cpfValid}
+                        </span>
+                      ) : (
+                        <span className="text-red-600 dark:text-red-400 inline-flex items-center gap-1">
+                          <AlertCircle className="h-3.5 w-3.5" />
+                          {t.auth.cpfInvalidCheck}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {rememberedCpf && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/[0.06]">
-                      <button
-                        type="button"
-                        disabled={loading}
-                        onClick={() => {
-                          setCpfInput(rememberedCpf.formattedCpf);
-                          void runCpfLookup(rememberedCpf.cpfDigits);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-[#1A2234] text-[#E5C88F] border border-[#C9A86A]/35 hover:bg-[#232D42] transition-colors"
-                      >
-                        <Lock className="h-3 w-3" />
-                        <span>{t.auth.quickAccess}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleClearCpfInput(true)}
-                        className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                        <span>{t.auth.forgetCpf}</span>
-                      </button>
+
+                  {lastHint && (
+                    <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] text-[11px] text-slate-600 dark:text-slate-300 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-500 dark:text-slate-400">{t.auth.lastVaultDevice}</span>
+                        <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">{lastHint}</span>
+                      </div>
+                      {rememberedCpf && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-white/[0.06]">
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => {
+                              setCpfInput(rememberedCpf.formattedCpf);
+                              void runCpfLookup(rememberedCpf.cpfDigits);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-50 dark:bg-[#1A2234] text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/35 hover:bg-blue-100/80 dark:hover:bg-[#232D42] transition-colors"
+                          >
+                            <Lock className="h-3 w-3" />
+                            <span>{t.auth.quickAccess}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleClearCpfInput(true)}
+                            className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            <span>{t.auth.forgetCpf}</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
-              )}
 
-              {error && (
-                <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-xs text-red-300 flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                  <span>{error}</span>
-                </div>
-              )}
+                  {error && (
+                    <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-500/30 text-xs text-red-700 dark:text-red-300 flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                      <span>{error}</span>
+                    </div>
+                  )}
 
-              <button
-                type="submit"
-                disabled={loading || !cpfValid}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-[#C9A86A] text-[#090D16] hover:bg-[#D8BA7F] disabled:opacity-40 transition-colors"
-              >
-                <span>{loading ? t.auth.checkingCpf : t.auth.continueBtn}</span>
-                <ArrowRight className="h-4 w-4" />
-              </button>
-            </form>
+                  <button
+                    type="submit"
+                    disabled={loading || !cpfValid}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors"
+                  >
+                    <span>{loading ? t.auth.checkingCpf : t.auth.continueBtn}</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleCredentialsLogin} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                      Usuário
+                    </label>
+                    <input
+                      type="text"
+                      name="username"
+                      autoComplete="username"
+                      value={credUsername}
+                      onChange={(e) => {
+                        setCredUsername(e.target.value);
+                        setError(null);
+                      }}
+                      placeholder="seu.usuario"
+                      className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                      Senha
+                    </label>
+                    <input
+                      type="password"
+                      name="password"
+                      autoComplete="current-password"
+                      value={credPassword}
+                      onChange={(e) => {
+                        setCredPassword(e.target.value);
+                        setError(null);
+                      }}
+                      placeholder="••••••••"
+                      className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                    />
+                  </div>
+
+                  <label className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                    <span>Lembrar usuário neste dispositivo</span>
+                    <input
+                      type="checkbox"
+                      checked={rememberUsername}
+                      onChange={(e) => setRememberUsername(e.target.checked)}
+                      className="accent-blue-600"
+                    />
+                  </label>
+
+                  {error && (
+                    <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-500/30 text-xs text-red-700 dark:text-red-300 flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                      <span>{error}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={loading || credUsername.trim().length < 3 || credPassword.length < 4}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors"
+                  >
+                    <Lock className="h-4 w-4" />
+                    <span>{loading ? t.auth.unlockingAccount : 'Entrar com Usuário e Senha'}</span>
+                  </button>
+                </form>
+              )}
+            </div>
           )}
 
           {/* STAGE 2A: EXISTING ACCOUNT LOGIN */}
@@ -568,16 +819,21 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
             <div className="p-6 sm:p-8 space-y-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-[11px] uppercase tracking-wider text-[#C9A86A] font-semibold">
+                  <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold">
                     {lookup.source === 'offline'
                       ? t.modals.offlineBanner
                       : t.auth.stageCpfKicker}
                   </div>
-                  <h2 className="mt-1 text-lg font-semibold text-white">
+                  <h2 className="mt-1 text-lg font-semibold text-slate-900 dark:text-white">
                     {lookup.fullNameHint}
                   </h2>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-mono text-slate-400">{lookup.maskedCpf}</span>
+                    <span className="text-xs font-mono text-slate-500 dark:text-slate-400">{lookup.maskedCpf}</span>
+                    {lookup.usernameHint && (
+                      <span className="text-xs font-mono text-blue-600 dark:text-blue-400">
+                        @{lookup.usernameHint}
+                      </span>
+                    )}
                     {renderKycBadge(lookup.kycStatus)}
                   </div>
                 </div>
@@ -587,7 +843,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                     setStage('cpf');
                     setError(null);
                   }}
-                  className="text-xs text-slate-400 hover:text-white inline-flex items-center gap-1"
+                  className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white inline-flex items-center gap-1"
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
                   {t.auth.backChangeCpf}
@@ -595,15 +851,15 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
               </div>
 
               {lookup.biometric?.enabled && (
-                <div className="p-4 rounded-xl bg-[#0D1320] border border-[#C9A86A]/30 space-y-3">
+                <div className="p-4 rounded-xl bg-blue-50/60 dark:bg-[#0D1320] border border-blue-200 dark:border-blue-500/30 space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2.5">
-                      <Fingerprint className="h-5 w-5 text-[#C9A86A]" />
+                      <Fingerprint className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                       <div>
-                        <div className="text-xs font-semibold text-white">
+                        <div className="text-xs font-semibold text-slate-900 dark:text-white">
                           {t.settings.security.bioTitle}
                         </div>
-                        <div className="text-[11px] text-slate-400">
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
                           {lookup.biometric.deviceLabel || t.settings.security.bioActive}
                         </div>
                       </div>
@@ -615,59 +871,133 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                       type="button"
                       disabled={loading}
                       onClick={handleBiometricLogin}
-                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-[#C9A86A] text-[#090D16] hover:bg-[#D8BA7F] disabled:opacity-40 transition-colors"
+                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors"
                     >
                       <Fingerprint className="h-4 w-4" />
                       <span>{loading ? t.auth.validatingBio : t.auth.enterWithBio}</span>
                     </button>
                   ) : (
-                    <div className="text-[11px] text-amber-300/90 leading-relaxed">
+                    <div className="text-[11px] text-amber-700 dark:text-amber-300/90 leading-relaxed">
                       {t.settings.security.bioReinstallHint}
                     </div>
                   )}
                 </div>
               )}
 
-              <form onSubmit={handlePinLogin} className="space-y-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    {t.auth.pinLabel}
-                  </label>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={6}
-                    autoFocus={!hasLocalBiometricForLookup}
-                    value={loginPin}
-                    onChange={(e) => {
-                      setLoginPin(e.target.value.replace(/\D/g, ''));
+              {lookup.hasPasswordLogin && (
+                <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginMethod('pin');
                       setError(null);
                     }}
-                    placeholder="••••••"
-                    className="w-full px-4 py-3 rounded-xl text-center text-lg font-mono tracking-[0.45em] bg-[#090D16] border border-white/[0.12] text-white focus:outline-none focus:ring-2 focus:ring-[#C9A86A]/60"
-                  />
+                    className={`py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      loginMethod === 'pin'
+                        ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 font-semibold shadow-xs'
+                        : 'text-slate-500 dark:text-slate-400'
+                    }`}
+                  >
+                    Entrar com PIN
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginMethod('password');
+                      setError(null);
+                    }}
+                    className={`py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      loginMethod === 'password'
+                        ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 font-semibold shadow-xs'
+                        : 'text-slate-500 dark:text-slate-400'
+                    }`}
+                  >
+                    Entrar com Senha
+                  </button>
                 </div>
+              )}
+
+              <form onSubmit={handlePinOrPasswordLogin} className="space-y-3">
+                {lookup.usernameHint && (
+                  <input
+                    type="text"
+                    readOnly
+                    value={lookup.usernameHint}
+                    autoComplete="username"
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    className="sr-only"
+                  />
+                )}
+
+                {loginMethod === 'password' && lookup.hasPasswordLogin ? (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                      Senha de Acesso {lookup.usernameHint ? `(@${lookup.usernameHint})` : ''}
+                    </label>
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      autoFocus={!hasLocalBiometricForLookup}
+                      value={loginPassword}
+                      onChange={(e) => {
+                        setLoginPassword(e.target.value);
+                        setError(null);
+                      }}
+                      placeholder="••••••••"
+                      className="w-full px-4 py-3 rounded-xl text-sm bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                      {t.auth.pinLabel}
+                    </label>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={6}
+                      autoFocus={!hasLocalBiometricForLookup}
+                      value={loginPin}
+                      onChange={(e) => {
+                        setLoginPin(e.target.value.replace(/\D/g, ''));
+                        setError(null);
+                      }}
+                      placeholder="••••••"
+                      className="w-full px-4 py-3 rounded-xl text-center text-lg font-mono tracking-[0.45em] bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                    />
+                  </div>
+                )}
 
                 {error && (
-                  <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-xs text-red-300 flex items-start gap-2">
+                  <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-500/30 text-xs text-red-700 dark:text-red-300 flex items-start gap-2">
                     <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                     <span>{error}</span>
                   </div>
                 )}
 
                 {infoNotice && (
-                  <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-xs text-emerald-300">
+                  <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-500/30 text-xs text-emerald-700 dark:text-emerald-300">
                     {infoNotice}
                   </div>
                 )}
 
                 <button
                   type="submit"
-                  disabled={loading || loginPin.length < 4}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-white text-[#090D16] hover:bg-slate-100 disabled:opacity-40 transition-colors"
+                  disabled={
+                    loading ||
+                    (loginMethod === 'password' ? loginPassword.length < 4 : loginPin.length < 4)
+                  }
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-slate-900 dark:bg-white text-white dark:text-[#090D16] hover:bg-slate-800 dark:hover:bg-slate-100 disabled:opacity-40 transition-colors"
                 >
                   <Lock className="h-3.5 w-3.5" />
-                  <span>{loading ? t.auth.unlockingAccount : t.auth.enterWithPin}</span>
+                  <span>
+                    {loading
+                      ? t.auth.unlockingAccount
+                      : loginMethod === 'password'
+                      ? 'Entrar com Senha'
+                      : t.auth.enterWithPin}
+                  </span>
                 </button>
               </form>
             </div>
@@ -678,18 +1008,18 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
             <div className="p-6 sm:p-8 space-y-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-[11px] uppercase tracking-wider text-[#C9A86A] font-semibold inline-flex items-center gap-1">
+                  <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold inline-flex items-center gap-1">
                     <UserPlus className="h-3.5 w-3.5" />
                     {t.auth.newRegKicker} · {t.auth.stepOf3} {regStep} / 3
                   </div>
-                  <h2 className="mt-1 text-lg font-semibold text-white">
+                  <h2 className="mt-1 text-lg font-semibold text-slate-900 dark:text-white">
                     {regStep === 1
                       ? t.auth.step1Title
                       : regStep === 2
                       ? t.auth.step2Title
                       : t.auth.step3Title}
                   </h2>
-                  <p className="mt-0.5 text-xs font-mono text-slate-400">
+                  <p className="mt-0.5 text-xs font-mono text-slate-500 dark:text-slate-400">
                     CPF {lookup.maskedCpf} · {t.auth.zeroGridTag}
                   </p>
                 </div>
@@ -700,7 +1030,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                     setError(null);
                     setInfoNotice(null);
                   }}
-                  className="text-xs text-slate-400 hover:text-white inline-flex items-center gap-1"
+                  className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white inline-flex items-center gap-1"
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
                   {t.auth.backChangeCpf}
@@ -708,7 +1038,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
               </div>
 
               {infoNotice && (
-                <div className="p-3 rounded-xl bg-amber-950/35 border border-amber-500/30 text-xs text-amber-200 leading-relaxed">
+                <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-500/30 text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
                   {infoNotice}
                 </div>
               )}
@@ -719,7 +1049,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                   <div
                     key={s}
                     className={`h-1.5 rounded-full transition-colors ${
-                      s <= regStep ? 'bg-[#C9A86A]' : 'bg-white/10'
+                      s <= regStep ? 'bg-blue-600' : 'bg-slate-200 dark:bg-white/10'
                     }`}
                   />
                 ))}
@@ -728,8 +1058,33 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
               {/* STEP 1: PERSONAL INFO */}
               {regStep === 1 && (
                 <div className="space-y-3.5">
+                  {hasPrefilledDraft && (
+                    <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/25 border border-blue-200 dark:border-blue-500/30 flex items-center justify-between gap-2 text-[11px] text-blue-800 dark:text-blue-200">
+                      <span className="inline-flex items-center gap-1.5">
+                        <UserCheck className="h-3.5 w-3.5 shrink-0" />
+                        <span>Dados cadastrais pré-preenchidos do rascunho seguro deste aparelho.</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearCadastralDraft();
+                          setHasPrefilledDraft(false);
+                          setFullName('');
+                          setBirthDate('');
+                          setEmail('');
+                          setPhone('');
+                          setRegUsername('');
+                          setDocLast4('');
+                        }}
+                        className="font-semibold underline shrink-0"
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                  )}
+
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                       {t.auth.fullNameLabel}
                     </label>
                     <input
@@ -740,13 +1095,13 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                         setError(null);
                       }}
                       placeholder="Ex.: Thayllon Silva"
-                      className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#090D16] border border-white/[0.12] text-white focus:outline-none focus:ring-2 focus:ring-[#C9A86A]/60"
+                      className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40"
                     />
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                         {t.auth.birthDateLabel}
                       </label>
                       <input
@@ -756,11 +1111,11 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                           setBirthDate(e.target.value);
                           setError(null);
                         }}
-                        className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono bg-[#090D16] border border-white/[0.12] text-white"
+                        className="w-full px-3.5 py-2.5 rounded-xl text-sm font-mono bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                         {t.auth.phoneLabel}
                       </label>
                       <input
@@ -768,13 +1123,13 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                         value={phone}
                         onChange={(e) => setPhone(e.target.value)}
                         placeholder="(00) 90000-0000"
-                        className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#090D16] border border-white/[0.12] text-white"
+                        className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
                       />
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                       {t.auth.emailLabel}
                     </label>
                     <input
@@ -782,12 +1137,12 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="nome@dominio.com"
-                      className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-[#090D16] border border-white/[0.12] text-white"
+                      className="w-full px-3.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
                     />
                   </div>
 
                   {error && (
-                    <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-xs text-red-300">
+                    <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-500/30 text-xs text-red-700 dark:text-red-300">
                       {error}
                     </div>
                   )}
@@ -806,7 +1161,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                       setError(null);
                       setRegStep(2);
                     }}
-                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-[#C9A86A] text-[#090D16] hover:bg-[#D8BA7F]"
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700"
                   >
                     <span>{t.auth.goToKyc}</span>
                     <ArrowRight className="h-4 w-4" />
@@ -818,19 +1173,19 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
               {regStep === 2 && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-400">{t.auth.kycStatusLabel}</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">{t.auth.kycStatusLabel}</span>
                     {renderKycBadge(kycStatus)}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                         {t.auth.officialDocLabel}
                       </label>
                       <select
                         value={docType}
                         onChange={(e) => setDocType(e.target.value as KycDocumentType)}
-                        className="w-full px-3 py-2.5 rounded-xl text-sm bg-[#090D16] border border-white/[0.12] text-white"
+                        className="w-full px-3 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
                       >
                         <option value="CNH">CNH</option>
                         <option value="RG">RG</option>
@@ -838,7 +1193,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                         {t.auth.docLast4Label}
                       </label>
                       <input
@@ -851,19 +1206,19 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                           setError(null);
                         }}
                         placeholder="0000"
-                        className="w-full px-3 py-2.5 rounded-xl text-sm font-mono tracking-widest bg-[#090D16] border border-white/[0.12] text-white"
+                        className="w-full px-3 py-2.5 rounded-xl text-sm font-mono tracking-widest bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
                       />
                     </div>
                   </div>
 
-                  <div className="p-4 rounded-xl bg-[#0D1320] border border-white/[0.08] space-y-3">
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] space-y-3">
                     <div className="flex items-start gap-3">
-                      <ScanFace className="h-5 w-5 text-[#C9A86A] shrink-0 mt-0.5" />
-                      <div className="text-xs text-slate-300 space-y-1">
-                        <div className="font-semibold text-white">
+                      <ScanFace className="h-5 w-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                      <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1">
+                        <div className="font-semibold text-slate-900 dark:text-white">
                           {t.auth.step2Title}
                         </div>
-                        <p className="text-slate-400 leading-relaxed">
+                        <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
                           {t.auth.footerSecurity}
                         </p>
                       </div>
@@ -875,8 +1230,8 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                       onClick={handleRunKycVerification}
                       className={`w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition-colors ${
                         kycStatus === 'verified'
-                          ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 cursor-default'
-                          : 'bg-[#1A2234] hover:bg-[#232D42] text-[#E5C88F] border border-[#C9A86A]/40'
+                          ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 cursor-default'
+                          : 'bg-blue-50 dark:bg-[#1A2234] hover:bg-blue-100/80 dark:hover:bg-[#232D42] text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/40'
                       }`}
                     >
                       <FileCheck2 className="h-4 w-4" />
@@ -891,7 +1246,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                   </div>
 
                   {error && (
-                    <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-xs text-red-300">
+                    <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-500/30 text-xs text-red-700 dark:text-red-300">
                       {error}
                     </div>
                   )}
@@ -900,7 +1255,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                     <button
                       type="button"
                       onClick={() => setRegStep(1)}
-                      className="px-3.5 py-2.5 rounded-xl text-xs text-slate-400 hover:text-white hover:bg-white/5"
+                      className="px-3.5 py-2.5 rounded-xl text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
                     >
                       {t.auth.backBtn}
                     </button>
@@ -910,7 +1265,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                         setError(null);
                         setRegStep(3);
                       }}
-                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-[#C9A86A] text-[#090D16] hover:bg-[#D8BA7F]"
+                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700"
                     >
                       <span>
                         {kycStatus === 'verified'
@@ -928,7 +1283,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                 <form onSubmit={handleCompleteRegistration} className="space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                         {t.auth.regPinLabel}
                       </label>
                       <input
@@ -942,11 +1297,11 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                           setError(null);
                         }}
                         placeholder="••••"
-                        className="w-full px-3.5 py-2.5 rounded-xl text-center text-base font-mono tracking-[0.35em] bg-[#090D16] border border-white/[0.12] text-white"
+                        className="w-full px-3.5 py-2.5 rounded-xl text-center text-base font-mono tracking-[0.35em] bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                         {t.auth.confirmPinLabel}
                       </label>
                       <input
@@ -960,24 +1315,83 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                           setError(null);
                         }}
                         placeholder="••••"
-                        className="w-full px-3.5 py-2.5 rounded-xl text-center text-base font-mono tracking-[0.35em] bg-[#090D16] border border-white/[0.12] text-white"
+                        className="w-full px-3.5 py-2.5 rounded-xl text-center text-base font-mono tracking-[0.35em] bg-slate-50 dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
                       />
                     </div>
                   </div>
 
-                  <label className="flex items-start gap-3 p-4 rounded-xl bg-[#0D1320] border border-white/[0.08] cursor-pointer">
+                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
+                      <KeyRound className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                      <span>Login por Usuário e Senha (opcional)</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                          Usuário
+                        </label>
+                        <input
+                          type="text"
+                          name="username"
+                          autoComplete="username"
+                          value={regUsername}
+                          onChange={(e) => {
+                            setRegUsername(e.target.value);
+                            setError(null);
+                          }}
+                          placeholder="ex.: thayllon"
+                          className="w-full px-3 py-2 rounded-lg text-xs bg-white dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                          Senha (mín. 6)
+                        </label>
+                        <input
+                          type="password"
+                          name="new-password"
+                          autoComplete="new-password"
+                          value={regPassword}
+                          onChange={(e) => {
+                            setRegPassword(e.target.value);
+                            setError(null);
+                          }}
+                          placeholder="••••••"
+                          className="w-full px-3 py-2 rounded-lg text-xs bg-white dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                          Confirmar senha
+                        </label>
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          value={regPasswordConfirm}
+                          onChange={(e) => {
+                            setRegPasswordConfirm(e.target.value);
+                            setError(null);
+                          }}
+                          placeholder="••••••"
+                          className="w-full px-3 py-2 rounded-lg text-xs bg-white dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <label className="flex items-start gap-3 p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] cursor-pointer">
                     <input
                       type="checkbox"
                       checked={enableBiometric}
                       onChange={(e) => setEnableBiometric(e.target.checked)}
-                      className="mt-0.5 accent-[#C9A86A]"
+                      className="mt-0.5 accent-blue-600"
                     />
                     <div className="text-xs">
-                      <div className="font-semibold text-white inline-flex items-center gap-1.5">
-                        <Fingerprint className="h-4 w-4 text-[#C9A86A]" />
+                      <div className="font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                        <Fingerprint className="h-4 w-4 text-blue-600 dark:text-blue-400" />
                         <span>{t.auth.enableBioLabel}</span>
                       </div>
-                      <p className="mt-1 text-slate-400 leading-relaxed">
+                      <p className="mt-1 text-slate-500 dark:text-slate-400 leading-relaxed">
                         {bioAvailability?.native
                           ? `${bioAvailability.label} · ${t.settings.security.bioReady}`
                           : t.settings.security.bioEnableHint}
@@ -985,13 +1399,13 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                     </div>
                   </label>
 
-                  <div className="p-3.5 rounded-xl bg-emerald-950/25 border border-emerald-500/25 text-xs text-emerald-300 flex items-start gap-2">
+                  <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-500/25 text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
                     <Sparkles className="h-4 w-4 shrink-0 mt-0.5" />
                     <span>{t.auth.zeroStartBanner}</span>
                   </div>
 
                   {error && (
-                    <div className="p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-xs text-red-300">
+                    <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-500/30 text-xs text-red-700 dark:text-red-300">
                       {error}
                     </div>
                   )}
@@ -1000,14 +1414,14 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                     <button
                       type="button"
                       onClick={() => setRegStep(2)}
-                      className="px-3.5 py-2.5 rounded-xl text-xs text-slate-400 hover:text-white hover:bg-white/5"
+                      className="px-3.5 py-2.5 rounded-xl text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5"
                     >
                       {t.auth.backBtn}
                     </button>
                     <button
                       type="submit"
                       disabled={loading}
-                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-[#C9A86A] text-[#090D16] hover:bg-[#D8BA7F] disabled:opacity-40"
+                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
                     >
                       <ShieldCheck className="h-4 w-4" />
                       <span>{loading ? t.auth.creatingVaultBtn : t.auth.finishCreateBtn}</span>

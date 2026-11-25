@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AccountStatus,
+  AccountType,
   AppSettings,
   AppState,
   AutoRule,
@@ -9,9 +10,10 @@ import {
   BiometricConfig,
   CategoryRow,
   ChatMessage,
+  CreditCardAccount,
+  CreditCardPurchase,
   EntryNature,
   NavTab,
-  PaymentMethod,
   RecurringBill,
   SavingsGoal,
   TransactionEntry,
@@ -24,7 +26,7 @@ import {
   MONTH_NAMES_SHORT,
 } from './data/initialData';
 import { computeAlerts, computeMatrixTotals } from './utils/financeEngine';
-import { buildConsentExpirationDate, evaluateAccountHealth } from './utils/openFinance';
+import { getInvoiceMonthKey } from './utils/creditCardsEngine';
 import { generatePrivateBankingAnnualPDF } from './utils/pdfReport';
 import {
   AutoBackupStatus,
@@ -39,9 +41,8 @@ import {
   runAutoBackupIfDue,
   shareOrDownloadLatestBackupJSON,
 } from './utils/backup';
-import { clearLocalVaultCache, saveLocalVaultCache } from './utils/localVault';
+import { clearLocalVaultCache, saveCadastralDraft, saveLocalVaultCache } from './utils/localVault';
 import {
-  refreshVaultFromServer,
   syncVaultState,
   uploadServerBackupSnapshot,
 } from './utils/vaultApi';
@@ -53,7 +54,7 @@ import {
 import {
   TableProperties,
   PlusCircle,
-  Landmark,
+  CreditCard,
   Settings as SettingsIcon,
 } from 'lucide-react';
 import { OfflineIndicator } from './components/PWAInstallButton';
@@ -65,7 +66,7 @@ import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { MatrixGridView } from './components/MatrixGridView';
 import { TimelineView } from './components/TimelineView';
-import { OpenFinanceView } from './components/OpenFinanceView';
+import { CreditCardsView } from './components/CreditCardsView';
 import { AccountsSecurityView } from './components/AccountsSecurityView';
 import { InvestmentSimulatorView } from './components/InvestmentSimulatorView';
 import { AssistantChatView } from './components/AssistantChatView';
@@ -74,6 +75,8 @@ import { SettingsView } from './components/SettingsView';
 import { CellDetailDrawer } from './components/CellDetailDrawer';
 import { NewEntryModal } from './components/NewEntryModal';
 import { LockScreenModal } from './components/LockScreenModal';
+import { ReportsImportModal } from './components/ReportsImportModal';
+import { ValidatedImportRow } from './utils/spreadsheetReports';
 
 interface AuthSession {
   token: string;
@@ -96,6 +99,7 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
   const rawClosingDay = Number(rawSettings.closingDay);
   const rawAutoLock = Number(rawSettings.autoLockMinutes);
   const rawThreshold = Number(rawSettings.anomalyThresholdPct);
+  const rawLeadDays = Number(rawSettings.alertLeadDays);
 
   const mergedSettings: AppSettings = {
     ...clean.settings,
@@ -106,6 +110,7 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
     closingDay: Number.isFinite(rawClosingDay) ? Math.min(31, Math.max(1, Math.trunc(rawClosingDay))) : clean.settings.closingDay,
     autoLockMinutes: Number.isFinite(rawAutoLock) ? Math.max(1, Math.trunc(rawAutoLock)) : clean.settings.autoLockMinutes,
     anomalyThresholdPct: Number.isFinite(rawThreshold) ? Math.max(10, rawThreshold) : clean.settings.anomalyThresholdPct,
+    alertLeadDays: Number.isFinite(rawLeadDays) ? Math.min(30, Math.max(1, Math.trunc(rawLeadDays))) : clean.settings.alertLeadDays ?? 3,
   };
   if (mergedSettings.privacyDefaultOnBoot) {
     mergedSettings.privacyMode = true;
@@ -142,9 +147,41 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
     ? rawState.accounts.filter((a): a is BankAccount => Boolean(a && typeof a === 'object' && a.id))
     : [];
 
-  const sanitizedRevoked: BankAccount[] = Array.isArray(rawState.revokedConsents)
-    ? rawState.revokedConsents.filter((a): a is BankAccount => Boolean(a && typeof a === 'object' && a.id))
+  const sanitizedCreditCards: CreditCardAccount[] = Array.isArray(rawState.creditCards)
+    ? rawState.creditCards
+        .filter((c): c is CreditCardAccount => Boolean(c && typeof c === 'object' && c.id && c.bankName))
+        .map((c) => {
+          const limit = Number(c.totalLimit);
+          const closing = Number(c.closingDay);
+          const due = Number(c.dueDay);
+          return {
+            ...c,
+            bankColor: c.bankColor || '#2563EB',
+            totalLimit: Number.isFinite(limit) && limit >= 0 ? Number(limit.toFixed(2)) : 0,
+            closingDay: Number.isFinite(closing) ? Math.min(31, Math.max(1, Math.trunc(closing))) : 10,
+            dueDay: Number.isFinite(due) ? Math.min(31, Math.max(1, Math.trunc(due))) : 17,
+          };
+        })
     : [];
+
+  const sanitizedCardPurchases: CreditCardPurchase[] = Array.isArray(rawState.cardPurchases)
+    ? rawState.cardPurchases
+        .filter((p): p is CreditCardPurchase => Boolean(p && typeof p === 'object' && p.id && p.cardId))
+        .map((p) => {
+          const amt = Number(p.totalAmount);
+          const inst = Number(p.installments);
+          return {
+            ...p,
+            totalAmount: Number.isFinite(amt) && amt >= 0 ? Number(amt.toFixed(2)) : 0,
+            installments: Number.isFinite(inst) ? Math.min(24, Math.max(1, Math.trunc(inst))) : 1,
+          };
+        })
+    : [];
+
+  const sanitizedPaidInvoices: Record<string, boolean> =
+    rawState.paidCardInvoices && typeof rawState.paidCardInvoices === 'object'
+      ? rawState.paidCardInvoices
+      : {};
 
   const sanitizedRecurringBills: RecurringBill[] = Array.isArray(rawState.recurringBills)
     ? rawState.recurringBills
@@ -154,6 +191,8 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
           const due = Number(b.dueDay);
           return {
             ...b,
+            type: b.type === 'income' ? 'income' : 'debit',
+            active: b.active !== false,
             amount: Number.isFinite(amt) && amt >= 0 ? Number(amt.toFixed(2)) : 0,
             dueDay: Number.isFinite(due) ? Math.min(31, Math.max(1, Math.trunc(due))) : 15,
             statusByMonth:
@@ -166,7 +205,9 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
     rows: rawState.rows,
     entries: sanitizedEntries,
     accounts: sanitizedAccounts,
-    revokedConsents: sanitizedRevoked,
+    creditCards: sanitizedCreditCards,
+    cardPurchases: sanitizedCardPurchases,
+    paidCardInvoices: sanitizedPaidInvoices,
     rules: Array.isArray(rawState.rules) ? rawState.rules : clean.rules,
     goals: Array.isArray(rawState.goals) ? rawState.goals : [],
     recurringBills: sanitizedRecurringBills,
@@ -177,7 +218,16 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
 }
 
 function getBackupDataSignature(s: AppState): string {
-  return JSON.stringify([s.entries, s.rows, s.accounts, s.goals, s.recurringBills ?? []]);
+  return JSON.stringify([
+    s.entries,
+    s.rows,
+    s.accounts,
+    s.creditCards ?? [],
+    s.cardPurchases ?? [],
+    s.paidCardInvoices ?? {},
+    s.goals,
+    s.recurringBills ?? [],
+  ]);
 }
 
 export default function App() {
@@ -192,7 +242,10 @@ export default function App() {
   const [newEntryFlowType, setNewEntryFlowType] = useState<'income' | 'expense' | undefined>(
     undefined
   );
+  const [cardPurchaseTrigger, setCardPurchaseTrigger] = useState(0);
   const [selectedCell, setSelectedCell] = useState<{ rowId: string; month: number } | null>(null);
+  const [reportsModalOpen, setReportsModalOpen] = useState(false);
+  const [reportsModalMode, setReportsModalMode] = useState<'export' | 'import'>('export');
   const [isLocked, setIsLocked] = useState(false);
   const [backupMeta, setBackupMeta] = useState<BackupMeta>({ lastBackupAt: null, dirty: false });
   const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null);
@@ -213,15 +266,11 @@ export default function App() {
     }
   }, []);
 
-  // Theme class sync (dark default on auth screen too)
+  // Theme class sync (light default, dark optional)
   useEffect(() => {
     const root = document.documentElement;
-    if (!authSession || state.settings.theme === 'dark') {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
-  }, [authSession, state.settings.theme]);
+    root.classList.toggle('dark', state.settings.theme === 'dark');
+  }, [state.settings.theme]);
 
   // Language persistence & document lang attribute sync
   useEffect(() => {
@@ -352,11 +401,6 @@ export default function App() {
     [state.rows, state.entries, totals, state.settings]
   );
 
-  const openFinanceAttentionCount = useMemo(
-    () => state.accounts.filter((a) => evaluateAccountHealth(a).needsAction).length,
-    [state.accounts]
-  );
-
   const handleAuthenticated = (payload: AuthenticatedSessionPayload) => {
     const normalized = normalizeRestoredState(payload.appState);
     skipNextSyncRef.current = true;
@@ -367,6 +411,15 @@ export default function App() {
       cpfId: payload.cpfId,
       profile: payload.profile,
       biometric: payload.biometric,
+    });
+    saveCadastralDraft({
+      fullName: payload.profile.fullName,
+      birthDate: payload.profile.birthDate,
+      email: payload.profile.email,
+      phone: payload.profile.phone,
+      username: payload.profile.username,
+      kycDocumentType: payload.profile.kycDocumentType,
+      kycDocumentLast4: payload.profile.kycDocumentLast4,
     });
     setBackupMeta(loadBackupMeta(payload.cpfId));
     setBackupReminderDismissed(false);
@@ -534,112 +587,50 @@ export default function App() {
     }));
   };
 
-  const handleConnectAccount = (account: Omit<BankAccount, 'id' | 'slot' | 'lastSync'>) => {
+  // Contas Bancárias Manuais
+  const handleAddAccount = (payload: {
+    institution: string;
+    institutionCode: string;
+    type: AccountType;
+    nickname: string;
+    balance: number;
+    color: string;
+  }) => {
     setState((prev) => {
       if (prev.accounts.length >= MAX_BANK_ACCOUNTS) return prev;
       const usedSlots = new Set(prev.accounts.map((a) => a.slot));
       let freeSlot = 1;
       while (usedSlots.has(freeSlot) && freeSlot <= MAX_BANK_ACCOUNTS) freeSlot++;
 
+      const nowIso = new Date().toISOString();
       const newAcc: BankAccount = {
-        ...account,
-        id: `acc-${Date.now()}`,
+        id: `acc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         slot: freeSlot,
-        lastSync: new Date().toISOString(),
-      };
-
-      const audit = {
-        id: `aud-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        action: 'Nova Conexão Open Finance',
-        actor: `Titular (Slot ${freeSlot}/5)`,
-        detail: `${newAcc.institution} (${newAcc.type}) conectada com consentimento somente leitura.`,
-        securityProtocol: `OAuth 2.0 + PKCE (${newAcc.pkceChallengeId}) · TLS 1.3`,
-        institution: newAcc.institution,
-        scope: newAcc.consentScope.join(', '),
-        status: 'success' as const,
-        eventType: 'auth' as const,
+        institution: payload.institution,
+        institutionCode: payload.institutionCode,
+        type: payload.type,
+        nickname: payload.nickname,
+        balance: payload.balance,
+        color: payload.color,
+        status: 'active',
+        lastSync: nowIso,
+        maskedAccount: `•••• ${String(1000 + freeSlot * 137).slice(-4)}`,
       };
 
       return {
         ...prev,
         accounts: [...prev.accounts, newAcc],
-        auditLog: [audit, ...prev.auditLog],
-      };
-    });
-  };
-
-  const handleSyncAccount = (accountId: string) => {
-    setState((prev) => {
-      const acc = prev.accounts.find((a) => a.id === accountId);
-      if (!acc) return prev;
-      const health = evaluateAccountHealth(acc);
-      if (health.effectiveStatus === 'consent_expired' || health.effectiveStatus === 'paused') {
-        return prev;
-      }
-      const now = new Date().toISOString();
-      return {
-        ...prev,
-        accounts: prev.accounts.map((a) =>
-          a.id === accountId
-            ? { ...a, status: 'active', statusMessage: undefined, lastSync: now }
-            : a
-        ),
-        auditLog: [
-          {
-            id: `aud-${Date.now()}`,
-            timestamp: now,
-            action: 'Sincronização Open Finance',
-            actor: `Slot ${acc.slot} · ${acc.institution}`,
-            detail: 'Saldos, limites, modalidades (crédito/débito) e lançamentos verificados sem duplicidade.',
-            securityProtocol: `${acc.connectorProvider ?? 'OAuth 2.0 + FAPI'} · TLS 1.3`,
-            institution: acc.institution,
-            scope: acc.consentScope.join(', '),
-            status: 'success' as const,
-            eventType: 'sync' as const,
-          },
-          ...prev.auditLog,
-        ],
-      };
-    });
-  };
-
-  const handleRenewAccountConsent = (accountId: string, termMonths = 12) => {
-    setState((prev) => {
-      const acc = prev.accounts.find((a) => a.id === accountId);
-      if (!acc) return prev;
-      const now = new Date();
-      const nowIso = now.toISOString();
-      const newChallenge = `pkce_${Math.random().toString(36).slice(2, 10)}`;
-      const newExpiry = buildConsentExpirationDate(termMonths, now);
-
-      return {
-        ...prev,
-        accounts: prev.accounts.map((a) =>
-          a.id === accountId
-            ? {
-                ...a,
-                status: 'active',
-                statusMessage: undefined,
-                consentGrantedAt: nowIso.slice(0, 10),
-                consentExpiresAt: newExpiry,
-                pkceChallengeId: newChallenge,
-                lastSync: nowIso,
-              }
-            : a
-        ),
         auditLog: [
           {
             id: `aud-${Date.now()}`,
             timestamp: nowIso,
-            action: 'Consentimento Renovado via Banco Oficial',
-            actor: `Titular (Slot ${acc.slot})`,
-            detail: `${acc.institution} reautorizada em ambiente oficial OAuth 2.0 / FAPI até ${newExpiry}.`,
-            securityProtocol: `OAuth 2.0 + FAPI (${newChallenge}) · TLS 1.3`,
-            institution: acc.institution,
-            scope: acc.consentScope.join(', '),
+            action: 'Conta Adicionada ao Cofre',
+            actor: `Titular (Slot ${freeSlot}/${MAX_BANK_ACCOUNTS})`,
+            detail: `${newAcc.institution} (${newAcc.type}) cadastrada com controle privado local.`,
+            securityProtocol: 'Cofre Privado CPF · LGPD',
+            institution: newAcc.institution,
             status: 'success' as const,
-            eventType: 'renew' as const,
+            eventType: 'auth' as const,
           },
           ...prev.auditLog,
         ],
@@ -647,75 +638,47 @@ export default function App() {
     });
   };
 
-  const handleSetAccountStatus = (
-    accountId: string,
-    status: AccountStatus,
-    statusMessage?: string
-  ) => {
+  const handleUpdateAccountBalance = (accountId: string, balance: number) => {
+    const nowIso = new Date().toISOString();
+    setState((prev) => ({
+      ...prev,
+      accounts: prev.accounts.map((a) =>
+        a.id === accountId ? { ...a, balance, lastSync: nowIso } : a
+      ),
+    }));
+  };
+
+  const handleTogglePauseAccount = (accountId: string) => {
     setState((prev) => {
       const acc = prev.accounts.find((a) => a.id === accountId);
       if (!acc) return prev;
+      const nextStatus: AccountStatus = acc.status === 'active' ? 'paused' : 'active';
       const nowIso = new Date().toISOString();
-      const actionLabel =
-        status === 'consent_expired'
-          ? 'Consentimento Expirado'
-          : status === 'sync_error'
-          ? 'Falha Temporária de Conector'
-          : status === 'paused'
-          ? 'Monitoramento Pausado'
-          : 'Monitoramento Retomado';
 
       return {
         ...prev,
         accounts: prev.accounts.map((a) =>
-          a.id === accountId
-            ? {
-                ...a,
-                status,
-                statusMessage,
-                ...(status === 'consent_expired'
-                  ? { consentExpiresAt: new Date(Date.now() - 86400000).toISOString().slice(0, 10) }
-                  : {}),
-              }
-            : a
+          a.id === accountId ? { ...a, status: nextStatus } : a
         ),
         auditLog: [
           {
             id: `aud-${Date.now()}`,
             timestamp: nowIso,
-            action: actionLabel,
+            action: nextStatus === 'paused' ? 'Conta Pausada' : 'Conta Reativada',
             actor: `Slot ${acc.slot} · ${acc.institution}`,
             detail:
-              statusMessage ||
-              (status === 'paused'
-                ? 'Sincronização automática suspensa pelo titular.'
-                : 'Estado do conector atualizado no cofre LGPD.'),
-            securityProtocol: 'Governança Open Finance (BACEN/LGPD)',
+              nextStatus === 'paused'
+                ? 'Conta excluída temporariamente do saldo consolidado.'
+                : 'Conta incluída novamente no saldo consolidado.',
+            securityProtocol: 'Cofre Privado CPF',
             institution: acc.institution,
-            scope: acc.consentScope.join(', '),
-            status:
-              status === 'consent_expired' || status === 'sync_error'
-                ? ('warning' as const)
-                : ('success' as const),
+            status: 'success' as const,
             eventType: 'status' as const,
           },
           ...prev.auditLog,
         ],
       };
     });
-  };
-
-  const handleTogglePauseAccount = (accountId: string) => {
-    const acc = state.accounts.find((a) => a.id === accountId);
-    if (!acc) return;
-    const nextStatus: AccountStatus = acc.status === 'active' ? 'paused' : 'active';
-    handleSetAccountStatus(
-      accountId,
-      nextStatus,
-      nextStatus === 'paused'
-        ? 'Sincronização automática suspensa pelo titular.'
-        : 'Sincronização automática reativada.'
-    );
   };
 
   const handleDisconnectAccount = (accountId: string) => {
@@ -726,22 +689,19 @@ export default function App() {
       const remaining = prev.accounts
         .filter((a) => a.id !== accountId)
         .map((a, idx) => ({ ...a, slot: idx + 1 }));
-      const revokedEntry: BankAccount = { ...acc, revokedAt: nowIso };
 
       return {
         ...prev,
         accounts: remaining,
-        revokedConsents: [revokedEntry, ...(prev.revokedConsents ?? [])].slice(0, 20),
         auditLog: [
           {
             id: `aud-${Date.now()}`,
             timestamp: nowIso,
-            action: 'Consentimento Revogado',
+            action: 'Conta Removida do Cofre',
             actor: 'Titular',
-            detail: `${acc.institution} desconectada e tokens PKCE destruídos.`,
-            securityProtocol: 'Revogação OAuth 2.0 RFC 7009',
+            detail: `${acc.institution} removida da lista de contas.`,
+            securityProtocol: 'Cofre Privado CPF',
             institution: acc.institution,
-            scope: acc.consentScope.join(', '),
             status: 'revoked' as const,
             eventType: 'revoke' as const,
           },
@@ -751,128 +711,100 @@ export default function App() {
     });
   };
 
-  const handleSimulateTransaction = (payload: {
-    accountId: string;
-    description: string;
-    merchant: string;
-    paymentMethod: PaymentMethod;
-    entryNature?: EntryNature;
-    installmentCurrent?: number;
-    installmentTotal?: number;
-    amount: number;
-    month: number;
-    day: number;
-    type: 'inflow' | 'outflow';
-  }): { matchedRowName: string; isDeduplicated: boolean } => {
-    const nature: EntryNature = payload.entryNature ?? 'standard';
-    const isDeduplicated = nature === 'internal_transfer' || nature === 'invoice_payment';
-    const descLower = `${payload.description} ${payload.merchant}`.toLowerCase();
-    const matchedRule = state.rules.find(
-      (r) => r.enabled && descLower.includes(r.keyword.toLowerCase())
-    );
+  // Cartões de Crédito & Compras Parceladas
+  const handleAddCard = (card: Omit<CreditCardAccount, 'id' | 'createdAt'>) => {
+    const nowIso = new Date().toISOString();
+    const newCard: CreditCardAccount = {
+      ...card,
+      id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: nowIso,
+    };
+    setState((prev) => ({
+      ...prev,
+      creditCards: [...(prev.creditCards ?? []), newCard],
+      auditLog: [
+        {
+          id: `aud-${Date.now()}`,
+          timestamp: nowIso,
+          action: 'Cartão Cadastrado',
+          actor: 'Titular',
+          detail: `${newCard.bankName} adicionado com fechamento dia ${newCard.closingDay} e vencimento dia ${newCard.dueDay}.`,
+          securityProtocol: 'Cofre Privado CPF',
+          institution: newCard.bankName,
+          status: 'success' as const,
+          eventType: 'auth' as const,
+        },
+        ...prev.auditLog,
+      ],
+    }));
+  };
 
-    let targetRow = matchedRule
-      ? state.rows.find((r) => r.id === matchedRule.targetRowId && !r.hidden)
-      : undefined;
+  const handleUpdateCard = (cardId: string, patch: Partial<CreditCardAccount>) => {
+    setState((prev) => ({
+      ...prev,
+      creditCards: (prev.creditCards ?? []).map((c) =>
+        c.id === cardId ? { ...c, ...patch } : c
+      ),
+    }));
+  };
 
-    if (!targetRow) {
-      const acc = state.accounts.find((a) => a.id === payload.accountId);
-      if (payload.type === 'inflow') {
-        targetRow =
-          state.rows.find((r) => r.id === 'inc-extras') ??
-          state.rows.find((r) => r.block === 'income');
-      } else {
-        targetRow =
-          (acc?.defaultRowId ? state.rows.find((r) => r.id === acc.defaultRowId) : undefined) ??
-          state.rows.find((r) => r.id === 'var-outros');
-      }
-    }
-
-    const rowId = targetRow?.id ?? 'var-outros';
-    const matchedRowName = targetRow?.name ?? 'OUTROS';
-    const hasInstallments =
-      Number.isFinite(payload.installmentTotal) &&
-      (payload.installmentTotal ?? 1) > 1 &&
-      Number.isFinite(payload.installmentCurrent) &&
-      (payload.installmentCurrent ?? 1) >= 1;
-
+  const handleDeleteCard = (cardId: string) => {
     setState((prev) => {
-      const acc = prev.accounts.find((a) => a.id === payload.accountId);
-      const newEntry: TransactionEntry = {
-        id: `sim-${Date.now()}`,
-        rowId,
-        year: prev.settings.activeYear,
-        month: payload.month,
-        day: payload.day,
-        amount: payload.amount,
-        description: payload.description,
-        merchant: payload.merchant,
-        paymentMethod: payload.paymentMethod,
-        entryNature: nature,
-        installments: hasInstallments
-          ? `${payload.installmentCurrent}/${payload.installmentTotal}`
-          : undefined,
-        installmentCurrent: hasInstallments ? payload.installmentCurrent : undefined,
-        installmentTotal: hasInstallments ? payload.installmentTotal : undefined,
-        accountId: payload.accountId,
-        source: 'simulated',
-        status: 'paid',
-        note: isDeduplicated
-          ? `Conciliado via Open Finance (${acc?.institution ?? 'Conta'}) · Excluído da soma de gastos reais para evitar duplicidade.`
-          : `Capturado via Open Finance (${acc?.institution ?? 'Conta'})`,
-        createdAt: new Date().toISOString(),
-      };
-
-      const updatedAccounts = prev.accounts.map((a) => {
-        if (a.id !== payload.accountId) return a;
-        const delta = payload.type === 'inflow' ? payload.amount : -payload.amount;
-        const nextBalance = Number((a.balance + delta).toFixed(2));
-        let nextAvailable = a.availableLimit;
-        if (a.type === 'Cartão de Crédito' && a.creditLimit !== undefined) {
-          const baseAvail = a.availableLimit ?? Math.max(0, a.creditLimit - Math.abs(a.balance));
-          nextAvailable = Number(
-            Math.max(0, Math.min(a.creditLimit, baseAvail + delta)).toFixed(2)
-          );
+      const nextPaid: Record<string, boolean> = {};
+      Object.entries(prev.paidCardInvoices ?? {}).forEach(([k, v]) => {
+        if (!k.startsWith(`${cardId}:`)) {
+          nextPaid[k] = v;
         }
-        return {
-          ...a,
-          balance: nextBalance,
-          availableLimit: nextAvailable,
-          lastSync: new Date().toISOString(),
-        };
       });
-
       return {
         ...prev,
-        entries: [...prev.entries, newEntry],
-        accounts: updatedAccounts,
-        auditLog: [
-          {
-            id: `aud-${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            action: isDeduplicated
-              ? 'Conciliação Anti-Duplicidade Open Finance'
-              : 'Transação Open Finance Recebida',
-            actor: acc ? `${acc.institution} (Slot ${acc.slot})` : 'Open Finance',
-            detail: isDeduplicated
-              ? `${payload.merchant} classificada como ${
-                  nature === 'invoice_payment' ? 'Pagamento de Fatura' : 'Transferência Interna'
-                } — não duplicada nos gastos.`
-              : `${payload.merchant} (${payload.paymentMethod.toUpperCase()} · D/${String(
-                  payload.day
-                ).padStart(2, '0')}) → Auto-categorizada em "${matchedRowName}".`,
-            securityProtocol: 'Webhook Assinado · TLS 1.3',
-            institution: acc?.institution ?? 'Open Finance',
-            scope: 'TRANSACTIONS_READ',
-            status: 'success' as const,
-            eventType: 'transaction' as const,
-          },
-          ...prev.auditLog,
-        ],
+        creditCards: (prev.creditCards ?? []).filter((c) => c.id !== cardId),
+        cardPurchases: (prev.cardPurchases ?? []).filter((p) => p.cardId !== cardId),
+        paidCardInvoices: nextPaid,
       };
     });
+  };
 
-    return { matchedRowName, isDeduplicated };
+  const handleAddCardPurchase = (purchase: Omit<CreditCardPurchase, 'id' | 'createdAt'>) => {
+    const newPurchase: CreditCardPurchase = {
+      ...purchase,
+      id: `cp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: new Date().toISOString(),
+    };
+    setState((prev) => ({
+      ...prev,
+      cardPurchases: [...(prev.cardPurchases ?? []), newPurchase],
+    }));
+  };
+
+  const handleUpdateCardPurchase = (purchaseId: string, patch: Partial<CreditCardPurchase>) => {
+    setState((prev) => ({
+      ...prev,
+      cardPurchases: (prev.cardPurchases ?? []).map((p) =>
+        p.id === purchaseId ? { ...p, ...patch } : p
+      ),
+    }));
+  };
+
+  const handleDeleteCardPurchase = (purchaseId: string) => {
+    setState((prev) => ({
+      ...prev,
+      cardPurchases: (prev.cardPurchases ?? []).filter((p) => p.id !== purchaseId),
+    }));
+  };
+
+  const handleToggleCardInvoicePaid = (cardId: string, year: number, month: number) => {
+    const key = getInvoiceMonthKey(cardId, year, month);
+    setState((prev) => {
+      const current = Boolean(prev.paidCardInvoices?.[key]);
+      return {
+        ...prev,
+        paidCardInvoices: {
+          ...(prev.paidCardInvoices ?? {}),
+          [key]: !current,
+        },
+      };
+    });
   };
 
   // Auto Rules
@@ -1017,6 +949,125 @@ export default function App() {
     setState(normalizeRestoredState(imported));
   };
 
+  const handleConfirmSpreadsheetImport = (
+    validRows: ValidatedImportRow[],
+    options: { syncRecurrences: boolean }
+  ) => {
+    if (validRows.length === 0) return;
+    const nowIso = new Date().toISOString();
+
+    setState((prev) => {
+      const nextRows = [...prev.rows];
+      const createdRowIdMap = new Map<string, string>();
+      const newEntries: TransactionEntry[] = [];
+      const nextRecurring = [...(prev.recurringBills ?? [])];
+
+      const normalizeKey = (block: string, name: string) =>
+        `${block}::${name
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .trim()}`;
+
+      for (const item of validRows) {
+        let rowId = item.matchedRowId;
+
+        if (!rowId) {
+          const key = normalizeKey(item.block, item.categoryName);
+          rowId = createdRowIdMap.get(key) ?? null;
+
+          if (!rowId) {
+            const existingMatch = nextRows.find(
+              (r) => !r.hidden && normalizeKey(r.block, r.name) === key
+            );
+            if (existingMatch) {
+              rowId = existingMatch.id;
+            } else {
+              const blockRows = nextRows.filter((r) => r.block === item.block);
+              const maxOrder = blockRows.reduce((m, r) => Math.max(m, r.order), 0);
+              rowId = `row-${item.block}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              nextRows.push({
+                id: rowId,
+                block: item.block,
+                name: item.categoryName.toUpperCase(),
+                refDay: item.day,
+                order: maxOrder + 1,
+                isRecurring: item.isRecurring,
+              });
+            }
+            createdRowIdMap.set(key, rowId);
+          }
+        }
+
+        newEntries.push({
+          id: `ent-imp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          rowId,
+          year: item.year,
+          month: item.month,
+          day: item.day,
+          amount: item.amount,
+          description: item.description,
+          merchant: item.description,
+          paymentMethod: item.paymentMethod,
+          entryNature: 'standard',
+          installments: item.installments,
+          installmentCurrent: item.installmentCurrent,
+          installmentTotal: item.installmentTotal,
+          accountId: item.accountId,
+          source: 'manual',
+          status: item.status,
+          note: item.note,
+          createdAt: nowIso,
+        });
+
+        if (options.syncRecurrences && item.isRecurring && item.block !== 'savings') {
+          const recType = item.block === 'income' ? 'income' : 'debit';
+          const titleKey = item.description.trim().toLowerCase();
+          const alreadyExists = nextRecurring.some(
+            (b) => b.title.trim().toLowerCase() === titleKey && b.dueDay === item.day && (b.type ?? 'debit') === recType
+          );
+          if (!alreadyExists) {
+            const monthKey = `${item.year}-${String(item.month).padStart(2, '0')}`;
+            nextRecurring.push({
+              id: `rec-imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              title: item.description,
+              type: recType,
+              amount: item.amount,
+              dueDay: item.day,
+              categoryRowId: rowId,
+              active: true,
+              statusByMonth: {
+                [monthKey]: item.status === 'paid' ? 'paid' : 'pending',
+              },
+              notes: item.note,
+              createdAt: nowIso,
+            });
+          }
+        }
+      }
+
+      return {
+        ...prev,
+        rows: nextRows,
+        entries: [...prev.entries, ...newEntries],
+        recurringBills: nextRecurring,
+        auditLog: [
+          {
+            id: `aud-${Date.now()}`,
+            timestamp: nowIso,
+            action: 'Importação de Planilha',
+            actor: 'Titular',
+            detail: `${newEntries.length} lançamento(s) importado(s) via CSV/Excel.`,
+            securityProtocol: 'Cofre Privado CPF',
+            status: 'success' as const,
+            eventType: 'transaction' as const,
+          },
+          ...prev.auditLog,
+        ],
+      };
+    });
+  };
+
   const handleRunManualBackupNow = async () => {
     if (!authSession) return;
     const status = await createBackupSnapshotAndPersist(
@@ -1037,28 +1088,6 @@ export default function App() {
     setBackupMeta(markBackupCompleted(authSession.cpfId));
   };
 
-  const handleRefreshVaultFromServer = async () => {
-    if (!authSession) return;
-    const fresh = await refreshVaultFromServer(authSession.token);
-    if (fresh) {
-      skipNextSyncRef.current = true;
-      setState(normalizeRestoredState(fresh));
-    }
-  };
-
-  const handleApplyOpenFinanceState = (patch: {
-    accounts?: BankAccount[];
-    revokedConsents?: BankAccount[];
-    auditLog?: AppState['auditLog'];
-  }) => {
-    setState((prev) => ({
-      ...prev,
-      ...(patch.accounts ? { accounts: patch.accounts } : {}),
-      ...(patch.revokedConsents ? { revokedConsents: patch.revokedConsents } : {}),
-      ...(patch.auditLog ? { auditLog: patch.auditLog } : {}),
-    }));
-  };
-
   const selectedRow = selectedCell
     ? state.rows.find((r) => r.id === selectedCell.rowId) ?? null
     : null;
@@ -1072,7 +1101,7 @@ export default function App() {
     : [];
 
   return (
-    <div className="min-h-screen flex bg-slate-50 dark:bg-[#090D16] text-slate-900 dark:text-slate-100">
+    <div className="min-h-screen flex bg-[#F8FAFC] dark:bg-[#090D16] text-slate-900 dark:text-slate-100">
       <Sidebar
         activeTab={activeTab}
         onSelectTab={(tab) => {
@@ -1081,7 +1110,7 @@ export default function App() {
         }}
         alertCount={alerts.length}
         connectedAccountsCount={state.accounts.length}
-        openFinanceAttentionCount={openFinanceAttentionCount}
+        creditCardsCount={(state.creditCards ?? []).length}
         maxAccounts={MAX_BANK_ACCOUNTS}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
@@ -1111,7 +1140,7 @@ export default function App() {
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
         />
 
-        <main className="flex-1 p-4 sm:p-6 max-w-[1600px] w-full mx-auto">
+        <main className="flex-1 px-4 pt-4 sm:px-6 sm:pt-6 pb-safe-main max-w-[1600px] w-full mx-auto">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -1125,6 +1154,9 @@ export default function App() {
                   rows={state.rows}
                   entries={state.entries}
                   accounts={state.accounts}
+                  creditCards={state.creditCards ?? []}
+                  cardPurchases={state.cardPurchases ?? []}
+                  paidCardInvoices={state.paidCardInvoices ?? {}}
                   goals={state.goals}
                   recurringBills={state.recurringBills ?? []}
                   totals={totals}
@@ -1151,15 +1183,24 @@ export default function App() {
                   onDeleteRecurringBill={handleDeleteRecurringBill}
                   onExportPDF={handleExportPDF}
                   onExportJSON={handleExportJSONBackup}
+                  onOpenReportsModal={(mode) => {
+                    setReportsModalMode(mode);
+                    setReportsModalOpen(true);
+                  }}
                   onDismissBackupReminder={() => setBackupReminderDismissed(true)}
                   onOpenGoalSettings={() => {
                     setSettingsSubTab('goals');
                     setActiveTab('settings');
                   }}
-                  onOpenAccountsHub={() => setActiveTab('openfinance')}
+                  onOpenAccountsHub={() => setActiveTab('accounts')}
+                  onOpenCardsHub={() => setActiveTab('cards')}
                   onQuickEntry={(flowType) => {
                     setNewEntryFlowType(flowType);
                     setNewEntryModalOpen(true);
+                  }}
+                  onQuickCardPurchase={() => {
+                    setActiveTab('cards');
+                    setCardPurchaseTrigger((n) => n + 1);
                   }}
                 />
               )}
@@ -1174,35 +1215,33 @@ export default function App() {
                 />
               )}
 
-              {activeTab === 'openfinance' && (
-                <OpenFinanceView
-                  authToken={authSession.token}
-                  accounts={state.accounts}
-                  revokedConsents={state.revokedConsents ?? []}
-                  rows={state.rows}
-                  rules={state.rules}
-                  auditLog={state.auditLog}
+              {activeTab === 'cards' && (
+                <CreditCardsView
+                  cards={state.creditCards ?? []}
+                  purchases={state.cardPurchases ?? []}
+                  paidCardInvoices={state.paidCardInvoices ?? {}}
                   settings={state.settings}
-                  onTogglePauseAccount={handleTogglePauseAccount}
-                  onDisconnectAccount={handleDisconnectAccount}
-                  onAddRule={handleAddRule}
-                  onToggleRule={handleToggleRule}
-                  onDeleteRule={handleDeleteRule}
-                  onRefreshVault={handleRefreshVaultFromServer}
-                  onApplySyncedState={handleApplyOpenFinanceState}
+                  openNewPurchaseTrigger={cardPurchaseTrigger}
+                  onUpdateSettings={updateSettings}
+                  onAddCard={handleAddCard}
+                  onUpdateCard={handleUpdateCard}
+                  onDeleteCard={handleDeleteCard}
+                  onAddPurchase={handleAddCardPurchase}
+                  onUpdatePurchase={handleUpdateCardPurchase}
+                  onDeletePurchase={handleDeleteCardPurchase}
+                  onToggleInvoicePaid={handleToggleCardInvoicePaid}
                 />
               )}
 
               {activeTab === 'accounts' && (
                 <AccountsSecurityView
-                  authToken={authSession.token}
                   accounts={state.accounts}
                   auditLog={state.auditLog}
                   settings={state.settings}
+                  onAddAccount={handleAddAccount}
+                  onUpdateAccountBalance={handleUpdateAccountBalance}
                   onTogglePauseAccount={handleTogglePauseAccount}
                   onDisconnectAccount={handleDisconnectAccount}
-                  onRefreshVault={handleRefreshVaultFromServer}
-                  onApplySyncedState={handleApplyOpenFinanceState}
                 />
               )}
 
@@ -1224,9 +1263,9 @@ export default function App() {
               {activeTab === 'downloads' && (
                 <DownloadCenterView
                   state={state}
-                  profile={authSession.profile}
+                  totals={totals}
                   language={state.settings.language}
-                  onExportJSON={handleExportJSONBackup}
+                  onConfirmImport={handleConfirmSpreadsheetImport}
                 />
               )}
 
@@ -1251,14 +1290,27 @@ export default function App() {
                   onDeleteGoal={handleDeleteGoal}
                   onExportPDF={handleExportPDF}
                   onExportJSON={handleExportJSONBackup}
+                  onOpenReportsModal={(mode) => {
+                    setReportsModalMode(mode);
+                    setReportsModalOpen(true);
+                  }}
                   onLoadDemo2026Data={handleLoadDemo2026Data}
                   onClearOperationalData={handleClearOperationalData}
                   onImportBackup={handleImportBackup}
-                  onProfileUpdated={(updatedProfile) =>
+                  onProfileUpdated={(updatedProfile) => {
+                    saveCadastralDraft({
+                      fullName: updatedProfile.fullName,
+                      birthDate: updatedProfile.birthDate,
+                      email: updatedProfile.email,
+                      phone: updatedProfile.phone,
+                      username: updatedProfile.username,
+                      kycDocumentType: updatedProfile.kycDocumentType,
+                      kycDocumentLast4: updatedProfile.kycDocumentLast4,
+                    });
                     setAuthSession((prev) =>
                       prev ? { ...prev, profile: updatedProfile } : prev
-                    )
-                  }
+                    );
+                  }}
                   onBiometricUpdated={(updatedBio) =>
                     setAuthSession((prev) =>
                       prev ? { ...prev, biometric: updatedBio } : prev
@@ -1278,19 +1330,19 @@ export default function App() {
       {/* Mobile Bottom Quick Nav (4 core actions for < 2 minute daily workflow) */}
       <nav
         aria-label="Navegação rápida mobile"
-        className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 dark:bg-[#0D1320]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/[0.08] grid grid-cols-4 px-2 py-1.5"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 dark:bg-[#0D1320]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/[0.08] grid grid-cols-4 px-2 pt-1.5 pb-safe-nav"
       >
         <button
           type="button"
           onClick={() => setActiveTab('matrix')}
           className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
             activeTab === 'matrix'
-              ? 'text-[#A68342] dark:text-[#E5C88F]'
+              ? 'text-blue-600 dark:text-blue-400 font-semibold'
               : 'text-slate-500 dark:text-slate-400'
           }`}
         >
           <TableProperties className="h-4 w-4" />
-          <span>Saldo / Matriz</span>
+          <span>Painel</span>
         </button>
 
         <button
@@ -1307,15 +1359,15 @@ export default function App() {
 
         <button
           type="button"
-          onClick={() => setActiveTab('openfinance')}
+          onClick={() => setActiveTab('cards')}
           className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
-            activeTab === 'openfinance'
-              ? 'text-[#A68342] dark:text-[#E5C88F]'
+            activeTab === 'cards'
+              ? 'text-blue-600 dark:text-blue-400 font-semibold'
               : 'text-slate-500 dark:text-slate-400'
           }`}
         >
-          <Landmark className="h-4 w-4" />
-          <span>Open Finance</span>
+          <CreditCard className="h-4 w-4" />
+          <span>Cartões</span>
         </button>
 
         <button
@@ -1323,7 +1375,7 @@ export default function App() {
           onClick={() => setActiveTab('settings')}
           className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
             activeTab === 'settings'
-              ? 'text-[#A68342] dark:text-[#E5C88F]'
+              ? 'text-blue-600 dark:text-blue-400 font-semibold'
               : 'text-slate-500 dark:text-slate-400'
           }`}
         >
@@ -1369,6 +1421,15 @@ export default function App() {
         language={state.settings.language}
         onUnlock={() => setIsLocked(false)}
         onLogout={handleLogout}
+      />
+
+      <ReportsImportModal
+        isOpen={reportsModalOpen}
+        initialMode={reportsModalMode}
+        state={state}
+        totals={totals}
+        onClose={() => setReportsModalOpen(false)}
+        onConfirmImport={handleConfirmSpreadsheetImport}
       />
 
       <OfflineIndicator language={state.settings.language} />
