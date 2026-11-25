@@ -1,6 +1,6 @@
 {
-  "name": "Thayllon Private Control (CF 2026+)",
-  "description": "Plataforma exclusiva de controle financeiro matricial anual, Open Finance seguro, timeline projetada e consultoria patrimonial inteligente.",
+  "name": "ORBE Finanças",
+  "description": "Plataforma de controle financeiro matricial anual, gestão completa de cartões de crédito parcelados, timeline projetada e consultoria patrimonial inteligente.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

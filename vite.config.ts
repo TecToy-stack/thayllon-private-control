@@ -13,7 +13,8 @@ export default defineConfig(() => {
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
-          'icon.svg',
+          'orbe-logo.png',
+          'orbe-logo-dark.png',
           'apple-touch-icon.png',
           'pwa-192x192.png',
           'pwa-512x512.png',
@@ -22,10 +23,10 @@ export default defineConfig(() => {
         ],
         manifest: {
           id: '/',
-          name: 'Thayllon Private Control (CF 2026+)',
-          short_name: 'Private Control',
+          name: 'ORBE Finanças',
+          short_name: 'ORBE Finanças',
           description:
-            'Plataforma exclusiva de controle financeiro matricial anual, Open Finance seguro, KYC, biometria e consultoria patrimonial inteligente.',
+            'Plataforma de controle financeiro matricial anual, gestão completa de cartões de crédito parcelados, KYC, biometria e consultoria patrimonial inteligente.',
           start_url: '/',
           scope: '/',
           display: 'standalone',

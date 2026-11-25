@@ -3,10 +3,10 @@ import type { CapacitorConfig } from '@capacitor/cli';
 // Configuração base do Capacitor para empacotamento Android (.apk)
 const config: CapacitorConfig = {
   appId: 'com.thayllon.privatecontrol',
-  appName: 'Thayllon Private Control',
+  appName: 'ORBE Finanças',
   webDir: 'dist',
   android: {
-    backgroundColor: '#090D16',
+    backgroundColor: '#F8FAFC',
     allowMixedContent: false,
     captureInput: true,
     webContentsDebuggingEnabled: false,
