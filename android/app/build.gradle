@@ -3,12 +3,37 @@ apply plugin: 'com.android.application'
 android {
     namespace = "com.thayllon.privatecontrol"
     compileSdk = rootProject.ext.compileSdkVersion
+
+    def resolvedVersionCode = (project.findProperty("ANDROID_VERSION_CODE") ?: System.getenv("ANDROID_VERSION_CODE") ?: "2").toInteger()
+    def resolvedVersionName = (project.findProperty("ANDROID_VERSION_NAME") ?: System.getenv("ANDROID_VERSION_NAME") ?: "1.1.0").toString()
+    def customDebugKeystorePath = (project.findProperty("ANDROID_DEBUG_KEYSTORE_PATH") ?: System.getenv("ANDROID_DEBUG_KEYSTORE_PATH") ?: "").toString()
+    def customReleaseKeystorePath = (project.findProperty("ANDROID_KEYSTORE_PATH") ?: System.getenv("ANDROID_KEYSTORE_PATH") ?: "").toString()
+
+    signingConfigs {
+        if (customDebugKeystorePath && file(customDebugKeystorePath).exists()) {
+            debug {
+                storeFile file(customDebugKeystorePath)
+                storePassword((project.findProperty("ANDROID_DEBUG_STORE_PASSWORD") ?: System.getenv("ANDROID_DEBUG_STORE_PASSWORD") ?: "android").toString())
+                keyAlias((project.findProperty("ANDROID_DEBUG_KEY_ALIAS") ?: System.getenv("ANDROID_DEBUG_KEY_ALIAS") ?: "androiddebugkey").toString())
+                keyPassword((project.findProperty("ANDROID_DEBUG_KEY_PASSWORD") ?: System.getenv("ANDROID_DEBUG_KEY_PASSWORD") ?: "android").toString())
+            }
+        }
+        if (customReleaseKeystorePath && file(customReleaseKeystorePath).exists()) {
+            release {
+                storeFile file(customReleaseKeystorePath)
+                storePassword((project.findProperty("ANDROID_KEYSTORE_PASSWORD") ?: System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "").toString())
+                keyAlias((project.findProperty("ANDROID_KEY_ALIAS") ?: System.getenv("ANDROID_KEY_ALIAS") ?: "").toString())
+                keyPassword((project.findProperty("ANDROID_KEY_PASSWORD") ?: System.getenv("ANDROID_KEY_PASSWORD") ?: "").toString())
+            }
+        }
+    }
+
     defaultConfig {
         applicationId "com.thayllon.privatecontrol"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -17,9 +42,19 @@ android {
         }
     }
     buildTypes {
+        debug {
+            if (signingConfigs.findByName("debug") != null) {
+                signingConfig signingConfigs.debug
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (signingConfigs.findByName("release") != null) {
+                signingConfig signingConfigs.release
+            } else if (signingConfigs.findByName("debug") != null) {
+                signingConfig signingConfigs.debug
+            }
         }
     }
 }
