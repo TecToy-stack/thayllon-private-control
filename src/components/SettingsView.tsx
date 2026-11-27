@@ -22,7 +22,6 @@ import {
   AlertCircle,
   Globe,
   UserCheck,
-  FileSpreadsheet,
   Mic,
   Wifi,
   FolderCheck,
@@ -105,9 +104,7 @@ interface SettingsViewProps {
   onAddGoal: (goal: Omit<SavingsGoal, 'id' | 'createdAt'>) => void;
   onUpdateGoal: (goalId: string, patch: Partial<SavingsGoal>) => void;
   onDeleteGoal: (goalId: string) => void;
-  onExportPDF: () => void;
   onExportJSON: () => void;
-  onOpenReportsModal: (mode: 'export' | 'import') => void;
   onLoadDemo2026Data: () => void;
   onClearOperationalData: () => void;
   onImportBackup: (imported: AppState) => void;
@@ -137,9 +134,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onAddGoal,
   onUpdateGoal,
   onDeleteGoal,
-  onExportPDF,
   onExportJSON,
-  onOpenReportsModal,
   onLoadDemo2026Data,
   onClearOperationalData,
   onImportBackup,
@@ -2120,33 +2115,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
-              <button
-                type="button"
-                onClick={onExportPDF}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] hover:opacity-90"
-              >
-                <FileDown className="h-3.5 w-3.5" />
-                <span>{t.settings.security.exportPdfBtn}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => onOpenReportsModal('export')}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500"
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5" />
-                <span>Exportar Relatórios (CSV / Excel)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => onOpenReportsModal('import')}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700"
-              >
-                <Upload className="h-3.5 w-3.5" />
-                <span>Importar Planilha (CSV / Excel)</span>
-              </button>
-
               <button
                 type="button"
                 onClick={() => {

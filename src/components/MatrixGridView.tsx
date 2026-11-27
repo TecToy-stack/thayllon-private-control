@@ -11,13 +11,11 @@ import {
   Sparkles,
   CheckCircle2,
   CreditCard,
-  FileDown,
-  FileSpreadsheet,
-  Upload,
   Target,
   Calendar,
   Mic,
   Copy,
+  PiggyBank,
 } from 'lucide-react';
 import {
   AlertItem,
@@ -33,7 +31,6 @@ import {
   TransactionEntry,
 } from '../types/finance';
 import {
-  BackupReminderBanner,
   DailyControlHub,
   MonthComparisonStrip,
 } from './DailyControlWidgets';
@@ -67,9 +64,6 @@ interface MatrixGridViewProps {
   totals: MatrixTotals;
   alerts: AlertItem[];
   settings: AppSettings;
-  backupReminderVisible: boolean;
-  isOfflineVault: boolean;
-  lastBackupAt: string | null;
   onSelectCell: (row: CategoryRow, month: number) => void;
   onUpdateSettings: (patch: Partial<AppSettings>) => void;
   onUpdateRow: (rowId: string, patch: Partial<CategoryRow>) => void;
@@ -79,10 +73,6 @@ interface MatrixGridViewProps {
   onAddRecurringBill: (bill: Omit<RecurringBill, 'id' | 'createdAt'>) => void;
   onUpdateRecurringBill: (id: string, patch: Partial<RecurringBill>) => void;
   onDeleteRecurringBill: (id: string) => void;
-  onExportPDF: () => void;
-  onExportJSON: () => void;
-  onOpenReportsModal: (mode: 'export' | 'import') => void;
-  onDismissBackupReminder: () => void;
   onOpenGoalSettings: () => void;
   onOpenAccountsHub: () => void;
   onOpenCardsHub: () => void;
@@ -104,9 +94,6 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   totals,
   alerts,
   settings,
-  backupReminderVisible,
-  isOfflineVault,
-  lastBackupAt,
   onSelectCell,
   onUpdateSettings,
   onUpdateRow,
@@ -116,10 +103,6 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   onAddRecurringBill,
   onUpdateRecurringBill,
   onDeleteRecurringBill,
-  onExportPDF,
-  onExportJSON,
-  onOpenReportsModal,
-  onDismissBackupReminder,
   onOpenGoalSettings,
   onOpenAccountsHub,
   onOpenCardsHub,
@@ -138,7 +121,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
     savings: false,
   });
   const [showNewRowForm, setShowNewRowForm] = useState(false);
-  const [showMobileMatrix, setShowMobileMatrix] = useState(false);
+  const [showAnnualSection, setShowAnnualSection] = useState(false);
   const [newRowBlock, setNewRowBlock] = useState<BlockType>('variable');
   const [newRowName, setNewRowName] = useState('');
   const [newRowDay, setNewRowDay] = useState('');
@@ -447,16 +430,6 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
         </div>
       </div>
 
-      {/* ==================== 0. LEMBRETE DISCRETO DE BACKUP JSON ==================== */}
-      <BackupReminderBanner
-        visible={backupReminderVisible}
-        isOfflineVault={isOfflineVault}
-        lastBackupAt={lastBackupAt}
-        language={language}
-        onExportJSON={onExportJSON}
-        onDismiss={onDismissBackupReminder}
-      />
-
       {/* ==================== 0B. QUANTO AINDA PODE GASTAR NO MÊS + PREVISÃO & ALERTAS ==================== */}
       <MonthlyBudgetHero
         rows={rows}
@@ -474,7 +447,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
         }
       />
 
-      {/* ==================== 1. PAINEL PRINCIPAL: MÊS EM FOCO, CARTÕES & LIMITES ==================== */}
+      {/* ==================== 1. PAINEL PRINCIPAL: CAIXINHA, CARTÕES & EXTRATO DO MÊS ==================== */}
       <section className="rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
         {/* Top Spotlight Header with Month Selector */}
         <div className="px-5 py-4 bg-slate-50 dark:bg-[#0D1320] border-b border-slate-200 dark:border-white/[0.08] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -484,7 +457,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             </div>
             <div>
               <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold">
-                {t.matrix.monthInFocus}
+                Resumo de {monthNamesShort[focusMonth]}
               </div>
               <h1 className="text-lg sm:text-xl font-semibold text-slate-900 dark:text-white">
                 {monthNamesFull[focusMonth]} {activeYear}
@@ -511,11 +484,11 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
           </div>
         </div>
 
-        {/* 4 Core KPIs: Saldo em Conta, Fatura do Mês, Limite Livre Total, Limite Comprometido Total */}
+        {/* 4 Core KPIs: Saldo Disponível, Caixinha (Reserva Isolada), Fatura do Mês, Limite Cartões */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 dark:divide-white/[0.07] border-b border-slate-200 dark:border-white/[0.08]">
           <div className="p-5">
             <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              Saldo em Conta
+              Saldo Disponível no Mês
             </div>
             <div
               className={`mt-1.5 text-2xl font-semibold font-mono tabular-nums ${
@@ -529,13 +502,26 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             <div className="mt-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
               Entradas {formatBRL(spotlight.income, privacyMode)} · Saídas {formatBRL(spotlight.totalExpense, privacyMode)}
             </div>
-            {(previousMonthCarryover !== 0 || totals.savingsAnnual > 0) && (
+            {previousMonthCarryover !== 0 && (
               <div className="mt-0.5 text-[10px] font-mono tabular-nums text-blue-600 dark:text-blue-400 truncate">
-                {previousMonthCarryover !== 0 && `Ant.: ${formatBRL(previousMonthCarryover, privacyMode, true)}`}
-                {previousMonthCarryover !== 0 && totals.savingsAnnual > 0 && ' · '}
-                {totals.savingsAnnual > 0 && `Caixinha isolada: ${formatBRL(totals.savingsAnnual, privacyMode)}`}
+                Inclui saldo ant.: {formatBRL(previousMonthCarryover, privacyMode, true)}
               </div>
             )}
+          </div>
+
+          <div className="p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                Caixinha (Guardado)
+              </span>
+              <PiggyBank className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            </div>
+            <div className="mt-1.5 text-2xl font-semibold font-mono tabular-nums text-blue-600 dark:text-blue-400">
+              {formatBRL(totals.savingsAnnual, privacyMode)}
+            </div>
+            <div className="mt-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate">
+              Em {monthNamesShort[focusMonth]}: {formatBRL(spotlight.savings, privacyMode)} · Isolado dos gastos
+            </div>
           </div>
 
           <div className="p-5">
@@ -545,74 +531,26 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
               </span>
               <CreditCard className="h-4 w-4 text-blue-600 dark:text-blue-400" />
             </div>
-            <div className="mt-1.5 text-2xl font-semibold font-mono tabular-nums text-blue-600 dark:text-blue-400">
+            <div className="mt-1.5 text-2xl font-semibold font-mono tabular-nums text-slate-900 dark:text-white">
               {formatBRL(displayMonthInvoice, privacyMode)}
             </div>
             <div className="mt-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate">
               {creditCards.length > 0
                 ? `Em aberto: ${formatBRL(cardsOverview.monthUnpaidInvoice, privacyMode)}`
-                : `${creditCards.length} cartões · toque em Cartões`}
-            </div>
-          </div>
-
-          <div className="p-5">
-            <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              Limite Livre Total
-            </div>
-            <div className="mt-1.5 text-2xl font-semibold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
-              {formatBRL(cardsOverview.totalAvailable, privacyMode)}
-            </div>
-            <div className="mt-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-              Limite total: {formatBRL(cardsOverview.totalLimit, privacyMode)}
+                : 'Nenhum cartão cadastrado'}
             </div>
           </div>
 
           <div className="p-5 bg-slate-50/70 dark:bg-[#151D2E]">
             <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              Limite Comprometido Total
+              Limite Livre dos Cartões
             </div>
-            <div className="mt-1.5 text-2xl font-semibold font-mono tabular-nums text-indigo-600 dark:text-indigo-400">
-              {formatBRL(cardsOverview.totalCommitted, privacyMode)}
+            <div className="mt-1.5 text-2xl font-semibold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+              {formatBRL(cardsOverview.totalAvailable, privacyMode)}
             </div>
-            <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 truncate">
-              {cardsOverview.committedUntil
-                ? `Comprometido até ${cardsOverview.committedUntil.label}`
-                : 'Sem parcelas em aberto'}
+            <div className="mt-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate">
+              Comprometido: {formatBRL(cardsOverview.totalCommitted, privacyMode)} de {formatBRL(cardsOverview.totalLimit, privacyMode)}
             </div>
-          </div>
-        </div>
-
-        {/* Monthly Cashflow Sub-strip */}
-        <div className="px-5 py-3 bg-slate-50/70 dark:bg-[#0D1320] border-b border-slate-200 dark:border-white/[0.08] grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs font-mono tabular-nums">
-          <div className="flex items-center justify-between sm:justify-start sm:gap-2">
-            <span className="font-sans text-slate-500 dark:text-slate-400">
-              {t.matrix.incomeIn} {monthNamesShort[focusMonth]}:
-            </span>
-            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-              {formatBRL(spotlight.income, privacyMode)}
-            </span>
-          </div>
-          <div className="flex items-center justify-between sm:justify-start sm:gap-2">
-            <span className="font-sans text-slate-500 dark:text-slate-400">
-              {t.matrix.expensesIn} {monthNamesShort[focusMonth]}:
-            </span>
-            <span className="font-semibold text-slate-900 dark:text-white">
-              {formatBRL(spotlight.totalExpense, privacyMode)}
-            </span>
-          </div>
-          <div className="flex items-center justify-between sm:justify-end sm:gap-2">
-            <span className="font-sans text-slate-500 dark:text-slate-400">
-              {t.matrix.resultOf} {monthNamesShort[focusMonth]}:
-            </span>
-            <span
-              className={`font-semibold ${
-                spotlight.result >= 0
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-red-600 dark:text-red-400'
-              }`}
-            >
-              {formatBRL(spotlight.result, privacyMode, true)}
-            </span>
           </div>
         </div>
 
@@ -930,20 +868,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
         </div>
       </section>
 
-      {/* ==================== 1B. RESUMO MENSAL COMPARATIVO (OCULTO NO MOBILE COMPACTO) ==================== */}
-      <div className="hidden sm:block">
-        <MonthComparisonStrip
-          rows={rows}
-          entries={entries}
-          totals={totals}
-          activeYear={activeYear}
-          focusMonth={focusMonth}
-          privacyMode={privacyMode}
-          language={language}
-        />
-      </div>
-
-      {/* ==================== 1C. CENTRAL DE CONTROLE DIÁRIO (RECORRENTES, LIMITES, PARCELAS & BUSCA) ==================== */}
+      {/* ==================== 1B. CENTRAL DE CONTROLE DIÁRIO (RECORRENTES, LIMITES, PARCELAS & BUSCA) ==================== */}
       <div ref={dailyControlRef}>
         <DailyControlHub
           rows={rows}
@@ -964,142 +889,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
         />
       </div>
 
-      {/* ==================== 2. MONITORAMENTO DE METAS DE ECONOMIA ==================== */}
-      <section className="p-5 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Target className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              {t.matrix.goalsTitle} ({activeYear})
-            </h2>
-          </div>
-          <button
-            type="button"
-            onClick={onOpenGoalSettings}
-            className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
-          >
-            {t.matrix.configureGoals}
-          </button>
-        </div>
-
-        {goalProgressList.length === 0 ? (
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            {t.matrix.noGoalsDefined}{' '}
-            <button
-              type="button"
-              onClick={onOpenGoalSettings}
-              className="underline text-blue-600 dark:text-blue-400"
-            >
-              {t.matrix.addFirstGoal}
-            </button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {goalProgressList.map(({ goal, currentAmount, pct, remaining, status }) => (
-              <div
-                key={goal.id}
-                className="p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06] space-y-2.5"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                      {goal.title}
-                    </div>
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                      {t.matrix.deadlinePrefix}{' '}
-                      {monthNamesShort[Math.min(11, Math.max(0, goal.deadlineMonth ?? 11))]}/
-                      {goal.deadlineYear} ·{' '}
-                      {goal.trackingMode === 'savings'
-                        ? t.matrix.tracksSavings
-                        : goal.trackingMode === 'result'
-                        ? t.matrix.tracksResult
-                        : t.matrix.tracksCombined}
-                    </div>
-                  </div>
-                  <span
-                    className={`text-[11px] font-medium px-2 py-0.5 rounded border shrink-0 ${
-                      status === 'achieved'
-                        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
-                        : status === 'ontrack'
-                        ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-500/30'
-                        : 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30'
-                    }`}
-                  >
-                    {translateGoalStatus(status, language)} ({pct}%)
-                  </span>
-                </div>
-
-                <div className="h-2.5 w-full rounded-full bg-slate-200 dark:bg-white/[0.08] overflow-hidden">
-                  <div
-                    style={{ width: `${pct}%` }}
-                    className={`h-full transition-all duration-300 ${
-                      status === 'achieved' ? 'bg-emerald-500' : 'bg-blue-600'
-                    }`}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                  <span>
-                    {t.matrix.currentLabel} <strong>{formatBRL(currentAmount, privacyMode)}</strong>
-                  </span>
-                  <span>
-                    {remaining > 0
-                      ? `${t.matrix.missingPrefix} ${formatBRL(remaining, privacyMode)}`
-                      : `${formatBRL(goal.targetAmount, privacyMode)} ${t.matrix.goalExceeded}`}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* ==================== 3. CONSOLIDADO ANUAL (KPIs) ==================== */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            {t.matrix.annualIncome} ({activeYear})
-          </div>
-          <div className="mt-1.5 text-xl font-semibold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
-            {formatBRL(totals.incomeAnnual, privacyMode)}
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            {t.matrix.annualExpense} ({activeYear})
-          </div>
-          <div className="mt-1.5 text-xl font-semibold font-mono tabular-nums text-slate-900 dark:text-white">
-            {formatBRL(totals.totalExpenseAnnual, privacyMode)}
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            {t.matrix.annualNetResult}
-          </div>
-          <div
-            className={`mt-1.5 text-xl font-semibold font-mono tabular-nums ${
-              totals.resultAnnual >= 0
-                ? 'text-emerald-600 dark:text-emerald-400'
-                : 'text-red-600 dark:text-red-400'
-            }`}
-          >
-            {formatBRL(totals.resultAnnual, privacyMode, true)}
-          </div>
-        </div>
-
-        <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            {t.matrix.annualSaved}
-          </div>
-          <div className="mt-1.5 text-xl font-semibold font-mono tabular-nums text-blue-600 dark:text-blue-400">
-            {formatBRL(totals.savingsAnnual, privacyMode)}
-          </div>
-        </div>
-      </div>
-
-      {/* Alert Banner */}
+      {/* Alert Banner (compact) */}
       {settings.notificationsEnabled && alerts.length > 0 && (
         <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start sm:items-center gap-3 min-w-0">
@@ -1130,168 +920,294 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
         </div>
       )}
 
-      {/* Workspace Controls Toolbar + Private Banking PDF Export */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06]">
-            {[2025, 2026, 2027].map((yr) => (
-              <button
-                key={yr}
-                type="button"
-                onClick={() => onUpdateSettings({ activeYear: yr })}
-                className={`px-3 py-1 rounded-md text-xs font-mono font-medium transition-colors ${
-                  activeYear === yr
-                    ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 shadow-xs'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                }`}
-              >
-                {yr}
-              </button>
-            ))}
-          </div>
-
-          <div className="relative">
-            <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t.matrix.filterCategoryPlaceholder}
-              className="pl-8 pr-3 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={() => onUpdateSettings({ showZeroMonths: !showZeroMonths })}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
-              showZeroMonths
-                ? 'bg-slate-50 dark:bg-[#0D1320] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-300'
-                : 'bg-blue-50 dark:bg-blue-500/15 border-blue-200 dark:border-blue-500/40 text-blue-700 dark:text-blue-300'
-            }`}
-          >
-            {showZeroMonths ? t.matrix.hideZeroMonths : t.matrix.showAll12Months}
-          </button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={onExportPDF}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap"
-          >
-            <FileDown className="h-3.5 w-3.5" />
-            <span>{t.matrix.downloadPdf}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onOpenReportsModal('export')}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100/70 dark:hover:bg-emerald-500/25 transition-colors whitespace-nowrap"
-          >
-            <FileSpreadsheet className="h-3.5 w-3.5" />
-            <span>Exportar CSV/Excel</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onOpenReportsModal('import')}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors whitespace-nowrap"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            <span>Importar Planilha</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowNewRowForm((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors whitespace-nowrap"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span>{t.matrix.addRow}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Inline Add Row Panel */}
-      {showNewRowForm && (
-        <form
-          onSubmit={handleCreateRow}
-          className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-blue-300 dark:border-blue-500/40 grid grid-cols-1 sm:grid-cols-5 gap-3 items-end"
-        >
-          <div>
-            <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-              {t.matrix.blockLabel}
-            </label>
-            <select
-              value={newRowBlock}
-              onChange={(e) => setNewRowBlock(e.target.value as BlockType)}
-              className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-            >
-              <option value="income">{t.settings.grid.blockIncome}</option>
-              <option value="fixed">{t.settings.grid.blockFixed}</option>
-              <option value="variable">{t.settings.grid.blockVariable}</option>
-            </select>
-          </div>
-          <div className="sm:col-span-2">
-            <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-              {t.matrix.rowNameLabel}
-            </label>
-            <input
-              type="text"
-              required
-              value={newRowName}
-              onChange={(e) => setNewRowName(e.target.value)}
-              placeholder={t.matrix.rowNamePlaceholder}
-              className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-              {t.matrix.refDayOpt}
-            </label>
-            <input
-              type="number"
-              min="1"
-              max="31"
-              value={newRowDay}
-              onChange={(e) => setNewRowDay(e.target.value)}
-              placeholder="15"
-              className="w-full px-3 py-2 rounded-lg text-xs font-mono bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="submit"
-              className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700"
-            >
-              {t.matrix.createRow}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowNewRowForm(false)}
-              className="px-3 py-2 rounded-lg text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
-            >
-              {t.matrix.cancel}
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* Mobile Toggle for Full 12-Month Matrix Table */}
-      <div className="sm:hidden">
+      {/* ==================== 2. VISÃO ANUAL, METAS & GRADE COMPLETA (RECOLHÍVEL) ==================== */}
+      <div className="space-y-4">
         <button
           type="button"
-          onClick={() => setShowMobileMatrix((v) => !v)}
-          className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] text-xs font-semibold text-slate-800 dark:text-slate-100"
+          onClick={() => setShowAnnualSection((v) => !v)}
+          className="w-full flex items-center justify-between px-4 py-3.5 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] text-xs font-semibold text-slate-800 dark:text-slate-100 hover:border-blue-400/60 transition-colors"
         >
-          <span>{showMobileMatrix ? 'Ocultar Grade Anual Completa (12 meses)' : 'Expandir Grade Anual Completa (12 meses)'}</span>
-          {showMobileMatrix ? <ChevronDown className="h-4 w-4 text-blue-600" /> : <ChevronRight className="h-4 w-4 text-blue-600" />}
+          <span>
+            {showAnnualSection
+              ? `Ocultar Visão Anual, Metas & Grade Completa (${activeYear})`
+              : `Ver Visão Anual, Metas & Grade Completa (${activeYear})`}
+          </span>
+          {showAnnualSection ? (
+            <ChevronDown className="h-4 w-4 text-blue-600" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-blue-600" />
+          )}
         </button>
-      </div>
 
-      {/* Main Matrix Spreadsheet */}
-      <div className={`${showMobileMatrix ? 'block' : 'hidden sm:block'} rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] overflow-hidden`}>
+        {showAnnualSection && (
+          <div className="space-y-6">
+            <div className="hidden sm:block">
+              <MonthComparisonStrip
+                rows={rows}
+                entries={entries}
+                totals={totals}
+                activeYear={activeYear}
+                focusMonth={focusMonth}
+                privacyMode={privacyMode}
+                language={language}
+              />
+            </div>
+
+            {/* Metas de Economia */}
+            <section className="p-5 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Target className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    {t.matrix.goalsTitle} ({activeYear})
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenGoalSettings}
+                  className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  {t.matrix.configureGoals}
+                </button>
+              </div>
+
+              {goalProgressList.length === 0 ? (
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {t.matrix.noGoalsDefined}{' '}
+                  <button
+                    type="button"
+                    onClick={onOpenGoalSettings}
+                    className="underline text-blue-600 dark:text-blue-400"
+                  >
+                    {t.matrix.addFirstGoal}
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {goalProgressList.map(({ goal, currentAmount, pct, remaining, status }) => (
+                    <div
+                      key={goal.id}
+                      className="p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06] space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                            {goal.title}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {t.matrix.deadlinePrefix}{' '}
+                            {monthNamesShort[Math.min(11, Math.max(0, goal.deadlineMonth ?? 11))]}/
+                            {goal.deadlineYear} ·{' '}
+                            {goal.trackingMode === 'savings'
+                              ? t.matrix.tracksSavings
+                              : goal.trackingMode === 'result'
+                              ? t.matrix.tracksResult
+                              : t.matrix.tracksCombined}
+                          </div>
+                        </div>
+                        <span
+                          className={`text-[11px] font-medium px-2 py-0.5 rounded border shrink-0 ${
+                            status === 'achieved'
+                              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                              : status === 'ontrack'
+                              ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-500/30'
+                              : 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30'
+                          }`}
+                        >
+                          {translateGoalStatus(status, language)} ({pct}%)
+                        </span>
+                      </div>
+
+                      <div className="h-2.5 w-full rounded-full bg-slate-200 dark:bg-white/[0.08] overflow-hidden">
+                        <div
+                          style={{ width: `${pct}%` }}
+                          className={`h-full transition-all duration-300 ${
+                            status === 'achieved' ? 'bg-emerald-500' : 'bg-blue-600'
+                          }`}
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                        <span>
+                          {t.matrix.currentLabel} <strong>{formatBRL(currentAmount, privacyMode)}</strong>
+                        </span>
+                        <span>
+                          {remaining > 0
+                            ? `${t.matrix.missingPrefix} ${formatBRL(remaining, privacyMode)}`
+                            : `${formatBRL(goal.targetAmount, privacyMode)} ${t.matrix.goalExceeded}`}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Consolidado Anual KPIs */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {t.matrix.annualIncome} ({activeYear})
+                </div>
+                <div className="mt-1.5 text-xl font-semibold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {formatBRL(totals.incomeAnnual, privacyMode)}
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {t.matrix.annualExpense} ({activeYear})
+                </div>
+                <div className="mt-1.5 text-xl font-semibold font-mono tabular-nums text-slate-900 dark:text-white">
+                  {formatBRL(totals.totalExpenseAnnual, privacyMode)}
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {t.matrix.annualNetResult}
+                </div>
+                <div
+                  className={`mt-1.5 text-xl font-semibold font-mono tabular-nums ${
+                    totals.resultAnnual >= 0
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-red-600 dark:text-red-400'
+                  }`}
+                >
+                  {formatBRL(totals.resultAnnual, privacyMode, true)}
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {t.matrix.annualSaved}
+                </div>
+                <div className="mt-1.5 text-xl font-semibold font-mono tabular-nums text-blue-600 dark:text-blue-400">
+                  {formatBRL(totals.savingsAnnual, privacyMode)}
+                </div>
+              </div>
+            </div>
+
+            {/* Grade Workspace Toolbar (sem botões de download/exportação/importação) */}
+            <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06]">
+                  {[2025, 2026, 2027].map((yr) => (
+                    <button
+                      key={yr}
+                      type="button"
+                      onClick={() => onUpdateSettings({ activeYear: yr })}
+                      className={`px-3 py-1 rounded-md text-xs font-mono font-medium transition-colors ${
+                        activeYear === yr
+                          ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 shadow-xs'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {yr}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="relative">
+                  <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder={t.matrix.filterCategoryPlaceholder}
+                    className="pl-8 pr-3 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onUpdateSettings({ showZeroMonths: !showZeroMonths })}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
+                    showZeroMonths
+                      ? 'bg-slate-50 dark:bg-[#0D1320] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-300'
+                      : 'bg-blue-50 dark:bg-blue-500/15 border-blue-200 dark:border-blue-500/40 text-blue-700 dark:text-blue-300'
+                  }`}
+                >
+                  {showZeroMonths ? t.matrix.hideZeroMonths : t.matrix.showAll12Months}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowNewRowForm((v) => !v)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors whitespace-nowrap"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>{t.matrix.addRow}</span>
+              </button>
+            </div>
+
+            {showNewRowForm && (
+              <form
+                onSubmit={handleCreateRow}
+                className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-blue-300 dark:border-blue-500/40 grid grid-cols-1 sm:grid-cols-5 gap-3 items-end"
+              >
+                <div>
+                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    {t.matrix.blockLabel}
+                  </label>
+                  <select
+                    value={newRowBlock}
+                    onChange={(e) => setNewRowBlock(e.target.value as BlockType)}
+                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                  >
+                    <option value="income">{t.settings.grid.blockIncome}</option>
+                    <option value="fixed">{t.settings.grid.blockFixed}</option>
+                    <option value="variable">{t.settings.grid.blockVariable}</option>
+                  </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    {t.matrix.rowNameLabel}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newRowName}
+                    onChange={(e) => setNewRowName(e.target.value)}
+                    placeholder={t.matrix.rowNamePlaceholder}
+                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                    {t.matrix.refDayOpt}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    value={newRowDay}
+                    onChange={(e) => setNewRowDay(e.target.value)}
+                    placeholder="15"
+                    className="w-full px-3 py-2 rounded-lg text-xs font-mono bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="submit"
+                    className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700"
+                  >
+                    {t.matrix.createRow}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewRowForm(false)}
+                    className="px-3 py-2 rounded-lg text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
+                  >
+                    {t.matrix.cancel}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Main Matrix Spreadsheet */}
+            <div className="rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left">
             <thead>
@@ -1553,6 +1469,9 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             {rows.filter((r) => !r.hidden).length} {t.matrix.activeCategories}
           </span>
         </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -91,6 +91,12 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
 }) => {
   const t = getTranslations(language);
   const monthNamesFull = getMonthNamesFull(language);
+  const [flowType, setFlowType] = useState<'expense' | 'income' | 'savings'>(
+    initialFlowType === 'income' ? 'income' : 'expense'
+  );
+  const [showVoicePanel, setShowVoicePanel] = useState(Boolean(autoStartVoice));
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
   const visibleRows = rows.filter((r) => !r.hidden);
   const [rowId, setRowId] = useState(visibleRows[0]?.id ?? 'inc-pizzaria');
   const [month, setMonth] = useState(
@@ -98,9 +104,8 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   );
   const [day, setDay] = useState(String(new Date().getDate()));
   const [amount, setAmount] = useState('');
-  const [merchant, setMerchant] = useState('');
-  const [voiceDescription, setVoiceDescription] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('debit');
+  const [shortDescription, setShortDescription] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('pix');
   const [entryNature, setEntryNature] = useState<EntryNature>('standard');
   const [installmentCurrent, setInstallmentCurrent] = useState('1');
   const [installmentTotal, setInstallmentTotal] = useState('1');
@@ -133,14 +138,51 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   }, [rows]);
 
   const selectedRow = rows.find((r) => r.id === rowId);
-  const isIncomeRow = selectedRow?.block === 'income';
+  const isIncomeRow = flowType === 'income' || selectedRow?.block === 'income';
+
+  const handleSelectFlowType = (nextFlow: 'expense' | 'income' | 'savings') => {
+    setFlowType(nextFlow);
+    const matchesFlow = (r: CategoryRow) =>
+      nextFlow === 'income'
+        ? r.block === 'income'
+        : nextFlow === 'savings'
+        ? r.block === 'savings'
+        : r.block === 'fixed' || r.block === 'variable';
+
+    const current = visibleRows.find((r) => r.id === rowId);
+    if (!current || !matchesFlow(current)) {
+      const firstMatch = visibleRows.find(matchesFlow);
+      if (firstMatch) setRowId(firstMatch.id);
+    }
+    if (nextFlow === 'income' && paymentMethod === 'credit') {
+      setPaymentMethod('pix');
+    }
+  };
 
   const applyParsedVoice = useCallback((transcript: string) => {
     const trimmed = transcript.trim();
     if (!trimmed) return;
     const parsed = parseVoiceTransaction(trimmed, rowsRef.current, monthRef.current);
     setParsedPreview(parsed);
-    if (parsed.matchedRowId) setRowId(parsed.matchedRowId);
+    if (parsed.matchedRowId) {
+      setRowId(parsed.matchedRowId);
+      const matched = rowsRef.current.find((r) => r.id === parsed.matchedRowId);
+      if (matched) {
+        setFlowType(
+          matched.block === 'income'
+            ? 'income'
+            : matched.block === 'savings'
+            ? 'savings'
+            : 'expense'
+        );
+      }
+    } else if (parsed.flowType === 'income') {
+      setFlowType('income');
+    } else if (parsed.flowType === 'savings') {
+      setFlowType('savings');
+    } else {
+      setFlowType('expense');
+    }
     if (parsed.amount !== null) setAmount(parsed.amount.toFixed(2));
     if (parsed.foundExplicitDay) setDay(String(parsed.day));
     if (parsed.foundExplicitMonth) setMonth(parsed.month);
@@ -148,10 +190,13 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
       setPaymentMethod(parsed.paymentMethod);
     }
     setStatus(parsed.status);
-    if (parsed.merchant) setMerchant(parsed.merchant);
-    if (parsed.description) setVoiceDescription(parsed.description);
+    const mergedDesc = parsed.description || parsed.merchant || '';
+    if (mergedDesc) setShortDescription(mergedDesc);
     if (parsed.installmentCurrent) setInstallmentCurrent(String(parsed.installmentCurrent));
-    if (parsed.installmentTotal) setInstallmentTotal(String(parsed.installmentTotal));
+    if (parsed.installmentTotal) {
+      setInstallmentTotal(String(parsed.installmentTotal));
+      if (parsed.installmentTotal > 1) setShowAdvanced(true);
+    }
   }, []);
 
   const clearRestartTimer = () => {
@@ -266,7 +311,6 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
           }
 
           if ((code === 'no-speech' || code === 'aborted') && keepListeningRef.current) {
-            // Natural pause/silence: let onend seamlessly restart while user keeps mic open
             return;
           }
 
@@ -325,6 +369,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   const startVoiceCapture = useCallback(async () => {
     setVoiceError(null);
     setVoiceDeniedSettings(false);
+    setShowVoicePanel(true);
 
     if (isListening || keepListeningRef.current) {
       await stopListening();
@@ -346,7 +391,6 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     accumulatedTranscriptRef.current = voiceText.trim();
     currentSegmentRef.current = '';
 
-    // 1. Prefer Android Native SpeechRecognizer on Capacitor Android APK
     if (isAndroidNativeApp()) {
       const nativeAvailable = await isNativeSpeechRecognitionAvailable();
       if (nativeAvailable) {
@@ -407,7 +451,6 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
       }
     }
 
-    // 2. Web Speech API with continuous = true & auto-restart until user clicks Encerrar
     const win = window as unknown as {
       SpeechRecognition?: new () => SpeechRecognitionLike;
       webkitSpeechRecognition?: new () => SpeechRecognitionLike;
@@ -416,7 +459,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
 
     if (!SpeechCtor) {
       setVoiceError(
-        'Reconhecimento de voz direto não disponível neste ambiente. Use o ditado por voz do teclado no campo abaixo e toque em Preencher.'
+        'Reconhecimento de voz direto não disponível neste ambiente. Use o ditado do teclado ou digite a frase.'
       );
       return;
     }
@@ -436,23 +479,33 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     currentSegmentRef.current = '';
     setMonth(Math.min(11, Math.max(0, Number.isFinite(defaultMonth) ? Math.trunc(defaultMonth) : 10)));
     setDay(String(new Date().getDate()));
+    setAmount('');
+    setShortDescription('');
     setEntryNature('standard');
     setInstallmentCurrent('1');
     setInstallmentTotal('1');
+    setShowAdvanced(false);
+    setStatus('paid');
     setVoiceText('');
-    setVoiceDescription('');
     setParsedPreview(null);
     setVoiceError(null);
     setVoiceDeniedSettings(false);
+    setShowVoicePanel(Boolean(autoStartVoice));
 
     if (initialFlowType === 'income') {
+      setFlowType('income');
+      setPaymentMethod('pix');
       const firstIncome = visibleRows.find((r) => r.block === 'income');
       if (firstIncome) setRowId(firstIncome.id);
     } else if (initialFlowType === 'expense') {
+      setFlowType('expense');
+      setPaymentMethod('pix');
       const firstExpense = visibleRows.find((r) => r.block === 'variable' || r.block === 'fixed');
       if (firstExpense) setRowId(firstExpense.id);
-    } else if (visibleRows.length > 0 && !visibleRows.some((r) => r.id === rowId)) {
-      setRowId(visibleRows[0].id);
+    } else {
+      setFlowType('expense');
+      const firstExpense = visibleRows.find((r) => r.block === 'variable' || r.block === 'fixed') ?? visibleRows[0];
+      if (firstExpense) setRowId(firstExpense.id);
     }
 
     if (accountId !== 'manual' && !accounts.some((a) => a.id === accountId)) {
@@ -487,6 +540,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     const currentRow = rows.find((r) => r.id === rowId);
     const instTot = Math.min(48, Math.max(1, parseInt(installmentTotal, 10) || 1));
     const instCur = Math.min(instTot, Math.max(1, parseInt(installmentCurrent, 10) || 1));
+    const cleanDesc = shortDescription.trim();
 
     onAddEntry({
       rowId,
@@ -494,11 +548,8 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
       month: safeMonth,
       day: Math.min(31, Math.max(1, parseInt(day, 10) || 15)),
       amount: Number(parsed.toFixed(2)),
-      description:
-        voiceDescription.trim() ||
-        merchant.trim() ||
-        `${currentRow?.name ?? t.modals.newEntryTitle} · ${monthNamesFull[safeMonth]}`,
-      merchant: merchant.trim() || currentRow?.name || t.modals.newEntryTitle,
+      description: cleanDesc || `${currentRow?.name ?? t.modals.newEntryTitle} · ${monthNamesFull[safeMonth]}`,
+      merchant: cleanDesc || currentRow?.name || t.modals.newEntryTitle,
       paymentMethod,
       entryNature,
       installments: instTot > 1 ? `${instCur}/${instTot}` : undefined,
@@ -510,223 +561,239 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     });
 
     setAmount('');
-    setMerchant('');
-    setVoiceDescription('');
+    setShortDescription('');
     setVoiceText('');
     setParsedPreview(null);
     onClose();
   };
 
+  const filteredCategoryRows = visibleRows.filter((r) => {
+    if (flowType === 'income') return r.block === 'income';
+    if (flowType === 'savings') return r.block === 'savings';
+    return r.block === 'fixed' || r.block === 'variable';
+  });
+
+  const paymentOptions: PaymentMethod[] = ['pix', 'debit', 'credit', 'cash', 'transfer'];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/60 backdrop-blur-xs" onClick={handleClose} />
-      <div className="relative z-10 w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between sticky top-0 bg-white dark:bg-[#111827] z-10">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-            {t.modals.newEntryTitle} ({activeYear})
+      <div className="relative z-10 w-full max-w-md max-h-[92vh] overflow-y-auto rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl">
+        <div className="px-5 py-3.5 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2 sticky top-0 bg-white dark:bg-[#111827] z-10">
+          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">
+            {t.modals.newEntryTitle}
           </h2>
-          <button
-            type="button"
-            onClick={handleClose}
-            className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                if (isListening) {
+                  void stopListening();
+                } else {
+                  setShowVoicePanel((prev) => !prev);
+                }
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                isListening
+                  ? 'bg-red-600 text-white'
+                  : showVoicePanel
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-100 dark:hover:bg-blue-950/60'
+              }`}
+            >
+              <Mic className="h-3.5 w-3.5" />
+              <span>{isListening ? 'Gravando' : 'Por Voz'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
+              aria-label="Fechar"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {/* Smart Voice / Natural Phrase Entry */}
-          <div
-            className={`p-3.5 rounded-xl border space-y-2.5 transition-colors ${
-              isListening
-                ? 'bg-red-50/80 dark:bg-red-950/25 border-red-300 dark:border-red-500/40'
-                : 'bg-blue-50/70 dark:bg-[#0D1320] border-blue-200/80 dark:border-blue-500/25'
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div
-                className={`flex items-center gap-1.5 text-xs font-semibold ${
-                  isListening ? 'text-red-700 dark:text-red-300' : 'text-blue-700 dark:text-blue-300'
-                }`}
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                <span>Lançamento Rápido por Voz ou Frase</span>
-              </div>
-              {isListening ? (
-                <button
-                  type="button"
-                  onClick={() => void stopListening()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-600 hover:bg-red-700 text-white shadow-sm transition-colors"
-                >
-                  <Square className="h-3 w-3 fill-current" />
-                  <span>Encerrar</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void startVoiceCapture()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors"
-                >
-                  <Mic className="h-3.5 w-3.5" />
-                  <span>Falar</span>
-                </button>
-              )}
-            </div>
-
-            {isListening && (
-              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-red-100/90 dark:bg-red-900/35 border border-red-200 dark:border-red-500/30">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="h-2.5 w-2.5 rounded-full bg-red-600 animate-ping shrink-0" />
-                  <span className="text-[11px] font-semibold text-red-800 dark:text-red-200 leading-tight">
-                    Microfone ativo — fale livremente (toque em Encerrar para parar)
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void stopListening()}
-                  className="px-2 py-1 rounded bg-red-700 hover:bg-red-800 text-white text-[10px] font-bold shrink-0"
-                >
-                  Concluir
-                </button>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <textarea
-                rows={2}
-                value={voiceText}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setVoiceText(val);
-                  if (!isListening) {
-                    accumulatedTranscriptRef.current = val;
-                    currentSegmentRef.current = '';
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    applyParsedVoice(voiceText);
-                  }
-                }}
-                placeholder="Ex: abasteci a moto com 50 reais no débito no posto GMC próximo ao Campo Goytacazes..."
-                className="w-full px-2.5 py-2 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white resize-y leading-relaxed"
-              />
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {/* Optional Compact Voice Shortcut */}
+          {showVoicePanel && (
+            <div
+              className={`p-3 rounded-xl border space-y-2 transition-colors ${
+                isListening
+                  ? 'bg-red-50/80 dark:bg-red-950/25 border-red-300 dark:border-red-500/40'
+                  : 'bg-blue-50/70 dark:bg-[#0D1320] border-blue-200/80 dark:border-blue-500/25'
+              }`}
+            >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                  {isListening
-                    ? 'Transcrevendo ao vivo...'
-                    : 'Você pode editar a frase antes de preencher ou salvar.'}
+                <span
+                  className={`flex items-center gap-1.5 text-xs font-semibold ${
+                    isListening ? 'text-red-700 dark:text-red-300' : 'text-blue-700 dark:text-blue-300'
+                  }`}
+                >
+                  <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                  <span>{isListening ? 'Ouvindo seu lançamento...' : 'Preenchimento por Voz ou Frase'}</span>
                 </span>
+                {isListening ? (
+                  <button
+                    type="button"
+                    onClick={() => void stopListening()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-semibold bg-red-600 hover:bg-red-700 text-white"
+                  >
+                    <Square className="h-3 w-3 fill-current" />
+                    <span>Encerrar</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void startVoiceCapture()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-semibold bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    <Mic className="h-3.5 w-3.5" />
+                    <span>Falar</span>
+                  </button>
+                )}
+              </div>
+
+              {isListening && (
+                <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-red-100/90 dark:bg-red-900/35 border border-red-200 dark:border-red-500/30">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="h-2 w-2 rounded-full bg-red-600 animate-ping shrink-0" />
+                    <span className="text-[11px] font-medium text-red-800 dark:text-red-200 truncate">
+                      Microfone ativo — fale livremente (toque em Encerrar para parar)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void stopListening()}
+                    className="px-2 py-0.5 rounded bg-red-700 text-white text-[10px] font-bold shrink-0"
+                  >
+                    Concluir
+                  </button>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={voiceText}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setVoiceText(val);
+                    if (!isListening) {
+                      accumulatedTranscriptRef.current = val;
+                      currentSegmentRef.current = '';
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      applyParsedVoice(voiceText);
+                    }
+                  }}
+                  placeholder="Ex: mercado 85 reais no pix hoje"
+                  className="flex-1 min-w-0 px-2.5 py-2 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                />
                 <button
                   type="button"
                   disabled={!voiceText.trim()}
                   onClick={() => applyParsedVoice(voiceText)}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] disabled:opacity-40 whitespace-nowrap"
+                  className="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-[11px] font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] disabled:opacity-40 shrink-0"
                 >
                   <CheckCircle2 className="h-3 w-3" />
-                  <span>Preencher</span>
+                  <span>Aplicar</span>
                 </button>
               </div>
+
+              {voiceError && (
+                <div className="text-[11px] text-amber-700 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2">
+                  <span>{voiceError}</span>
+                  {voiceDeniedSettings && (
+                    <button
+                      type="button"
+                      onClick={() => void openNativeAppSettings()}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-600 text-white font-semibold"
+                    >
+                      <Settings className="h-3 w-3" />
+                      <span>Ajustes</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {parsedPreview && parsedPreview.confidenceHints.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {parsedPreview.confidenceHints.slice(0, 4).map((hint) => (
+                    <span
+                      key={hint}
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-800 dark:text-blue-200 font-medium"
+                    >
+                      {hint}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
+          )}
 
-            {voiceError && (
-              <div className="text-[11px] text-amber-700 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2">
-                <span>{voiceError}</span>
-                {voiceDeniedSettings && (
-                  <button
-                    type="button"
-                    onClick={() => void openNativeAppSettings()}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-600 text-white font-semibold"
-                  >
-                    <Settings className="h-3 w-3" />
-                    <span>Ajustes do App</span>
-                  </button>
-                )}
-              </div>
-            )}
-
-            {parsedPreview && parsedPreview.confidenceHints.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-0.5">
-                {parsedPreview.confidenceHints.map((hint) => (
-                  <span
-                    key={hint}
-                    className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-800 dark:text-blue-200 font-medium"
-                  >
-                    {hint}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-              {t.modals.categoryRowLabel}
-            </label>
-            <select
-              value={rowId}
-              onChange={(e) => setRowId(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+          {/* 1. Tipo (Saída / Entrada / Caixinha) */}
+          <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06]">
+            <button
+              type="button"
+              onClick={() => handleSelectFlowType('expense')}
+              className={`py-2 rounded-lg text-xs font-semibold transition-colors ${
+                flowType === 'expense'
+                  ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
             >
-              <optgroup label={t.modals.groupIncome}>
-                {visibleRows
-                  .filter((r) => r.block === 'income')
-                  .map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name} {r.refDay ? `(D/${String(r.refDay).padStart(2, '0')})` : ''}
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label={t.modals.groupFixed}>
-                {visibleRows
-                  .filter((r) => r.block === 'fixed')
-                  .map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name} {r.refDay ? `(D/${String(r.refDay).padStart(2, '0')})` : ''}
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label={t.modals.groupVariable}>
-                {visibleRows
-                  .filter((r) => r.block === 'variable')
-                  .map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name} {r.refDay ? `(D/${String(r.refDay).padStart(2, '0')})` : ''}
-                    </option>
-                  ))}
-              </optgroup>
-              <optgroup label={t.modals.groupSavings}>
-                {visibleRows
-                  .filter((r) => r.block === 'savings')
-                  .map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-              </optgroup>
-            </select>
+              Saída (Despesa)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSelectFlowType('income')}
+              className={`py-2 rounded-lg text-xs font-semibold transition-colors ${
+                flowType === 'income'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Entrada (Receita)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSelectFlowType('savings')}
+              className={`py-2 rounded-lg text-xs font-semibold transition-colors ${
+                flowType === 'savings'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+              }`}
+            >
+              Caixinha
+            </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div className="col-span-2">
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.monthLabel}
+          {/* 2. Valor + Dia + Mês */}
+          <div className="grid grid-cols-12 gap-2.5">
+            <div className="col-span-5">
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                {t.modals.amountLabel}
               </label>
-              <select
-                value={month}
-                onChange={(e) => setMonth(Number(e.target.value))}
-                className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-              >
-                {monthNamesFull.map((m, idx) => (
-                  <option key={m} value={idx}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                required
+                autoFocus={!autoStartVoice}
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="0,00"
+                className="w-full px-3 py-2.5 rounded-xl text-base font-semibold font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+              />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+
+            <div className="col-span-3">
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                 {t.modals.dayLabel}
               </label>
               <input
@@ -735,159 +802,217 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                 max="31"
                 value={day}
                 onChange={(e) => setDay(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                className="w-full px-2.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white text-center"
               />
             </div>
-          </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.amountLabel}
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0.01"
-                required
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder="0,00"
-                className="w-full px-3 py-2.5 rounded-lg text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.methodLabel}
+            <div className="col-span-4">
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                {t.modals.monthLabel}
               </label>
               <select
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-                className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                value={month}
+                onChange={(e) => setMonth(Number(e.target.value))}
+                className="w-full px-2.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
               >
-                <option value="credit">{translatePaymentMethod('credit', language)}</option>
-                <option value="debit">{translatePaymentMethod('debit', language)}</option>
-                <option value="pix">{translatePaymentMethod('pix', language)}</option>
-                <option value="transfer">{translatePaymentMethod('transfer', language)}</option>
-                <option value="cash">{translatePaymentMethod('cash', language)}</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.accountLabel}
-              </label>
-              <select
-                value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-              >
-                <option value="manual">{t.modals.manualAccount}</option>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.institution} ({a.type})
+                {monthNamesFull.map((m, idx) => (
+                  <option key={m} value={idx}>
+                    {m.slice(0, 3)}
                   </option>
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.statusLabel}
-              </label>
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as EntryStatus)}
-                className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-              >
-                <option value="paid">{getPaidStatusLabel(isIncomeRow, language)}</option>
-                <option value="pending">{t.modals.statusPending}</option>
-                <option value="projected">{t.modals.statusProjected}</option>
-              </select>
-            </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.natureLabel}
-              </label>
-              <select
-                value={entryNature}
-                onChange={(e) => setEntryNature(e.target.value as EntryNature)}
-                className="w-full px-2.5 py-2.5 rounded-lg text-xs bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-              >
-                <option value="standard">{t.modals.natureReal}</option>
-                <option value="internal_transfer">{t.modals.natureInternal}</option>
-                <option value="invoice_payment">{t.modals.natureInvoice}</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.installmentLabel}
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="48"
-                value={installmentCurrent}
-                onChange={(e) => setInstallmentCurrent(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                {t.modals.ofTotalLabel}
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="48"
-                value={installmentTotal}
-                onChange={(e) => setInstallmentTotal(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-              />
-            </div>
-          </div>
-
+          {/* 3. Descrição Curta */}
           <div>
-            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-              {t.modals.merchantLabel}
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Descrição curta
             </label>
             <input
               type="text"
-              value={merchant}
-              onChange={(e) => setMerchant(e.target.value)}
-              placeholder={t.modals.merchantPlaceholder}
-              className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+              value={shortDescription}
+              onChange={(e) => setShortDescription(e.target.value)}
+              placeholder={
+                flowType === 'income'
+                  ? 'Ex.: Salário, Freelance, Venda Pix...'
+                  : flowType === 'savings'
+                  ? 'Ex.: Reserva do mês, Cofrinho...'
+                  : 'Ex.: Mercado, Posto, Farmácia, Aluguel...'
+              }
+              className="w-full px-3 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
             />
           </div>
 
+          {/* 4. Categoria */}
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+              {t.modals.categoryRowLabel}
+            </label>
+            <select
+              value={rowId}
+              onChange={(e) => setRowId(e.target.value)}
+              className="w-full px-3 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+            >
+              {filteredCategoryRows.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} {r.refDay ? `(Dia ${String(r.refDay).padStart(2, '0')})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 5. Forma de Pagamento (1 toque) */}
           <div>
             <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-              Descrição / Detalhes do Lançamento
+              {t.modals.methodLabel}
             </label>
-            <input
-              type="text"
-              value={voiceDescription}
-              onChange={(e) => setVoiceDescription(e.target.value)}
-              placeholder="Ex.: Abastecimento da moto - Posto GMC (próximo ao Campo Goytacazes)"
-              className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-            />
+            <div className="flex flex-wrap gap-1.5">
+              {paymentOptions.map((method) => {
+                const active = paymentMethod === method;
+                return (
+                  <button
+                    key={method}
+                    type="button"
+                    onClick={() => setPaymentMethod(method)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${
+                      active
+                        ? 'bg-blue-600 border-blue-600 text-white font-semibold'
+                        : 'bg-slate-50 dark:bg-[#1A2234] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#232D42]'
+                    }`}
+                  >
+                    {translatePaymentMethod(method, language)}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2">
+          {/* 6. Situação Individual (Pago / Recebido vs Pendente / Previsto) */}
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+              Situação
+            </label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {(
+                [
+                  { id: 'paid' as EntryStatus, label: getPaidStatusLabel(isIncomeRow, language) },
+                  { id: 'pending' as EntryStatus, label: t.modals.statusPending },
+                  { id: 'projected' as EntryStatus, label: t.modals.statusProjected },
+                ] as const
+              ).map((opt) => {
+                const active = status === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setStatus(opt.id)}
+                    className={`py-2 px-2.5 rounded-xl text-xs font-semibold border transition-colors ${
+                      active
+                        ? opt.id === 'paid'
+                          ? 'bg-emerald-600 border-emerald-600 text-white'
+                          : opt.id === 'pending'
+                          ? 'bg-amber-500 border-amber-500 text-white'
+                          : 'bg-blue-600 border-blue-600 text-white'
+                        : 'bg-slate-50 dark:bg-[#1A2234] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#232D42]'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Optional Advanced Fields (Collapsed by default) */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              {showAdvanced ? 'Ocultar conta e parcelas' : '+ Mais opções (conta ou parcelas)'}
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 pt-3 border-t border-slate-200/80 dark:border-white/[0.08] space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      {t.modals.accountLabel}
+                    </label>
+                    <select
+                      value={accountId}
+                      onChange={(e) => setAccountId(e.target.value)}
+                      className="w-full px-2.5 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                    >
+                      <option value="manual">{t.modals.manualAccount}</option>
+                      {accounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.institution} ({a.type})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      {t.modals.natureLabel}
+                    </label>
+                    <select
+                      value={entryNature}
+                      onChange={(e) => setEntryNature(e.target.value as EntryNature)}
+                      className="w-full px-2.5 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                    >
+                      <option value="standard">{t.modals.natureReal}</option>
+                      <option value="internal_transfer">{t.modals.natureInternal}</option>
+                      <option value="invoice_payment">{t.modals.natureInvoice}</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      {t.modals.installmentLabel}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="48"
+                      value={installmentCurrent}
+                      onChange={(e) => setInstallmentCurrent(e.target.value)}
+                      className="w-full px-2.5 py-2 rounded-lg text-xs font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      {t.modals.ofTotalLabel}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="48"
+                      value={installmentTotal}
+                      onChange={(e) => setInstallmentTotal(e.target.value)}
+                      className="w-full px-2.5 py-2 rounded-lg text-xs font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 dark:border-white/[0.06]">
             <button
               type="button"
               onClick={handleClose}
-              className="px-4 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5"
+              className="px-4 py-2.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5"
             >
               {t.modals.cancel}
             </button>
             <button
               type="submit"
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] hover:opacity-90"
+              className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs"
             >
               <Plus className="h-3.5 w-3.5" />
               {t.modals.saveEntry}

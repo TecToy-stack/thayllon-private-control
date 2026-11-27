@@ -87,19 +87,19 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
   );
 
   // ==================== HANDLERS ====================
-  const handleDownloadCsvTemplate = () => {
+  const handleDownloadTemplate = (format: 'csv' | 'xlsx') => {
     setCsvFormatError(null);
-    const filename = downloadImportTemplate('csv', rows, activeYear);
+    const filename = downloadImportTemplate(format, rows, activeYear);
     setCsvFeedback(
       isEn
-        ? `Standard CSV template downloaded: ${filename}`
+        ? `Standard ${format.toUpperCase()} template downloaded: ${filename}`
         : isEs
-        ? `Plantilla CSV estándar descargada: ${filename}`
-        : `Modelo CSV padrão baixado: ${filename}`
+        ? `Plantilla ${format.toUpperCase()} estándar descargada: ${filename}`
+        : `Modelo ${format.toUpperCase()} padrão baixado: ${filename}`
     );
   };
 
-  const handleSelectCsvFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSelectSpreadsheetFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
@@ -107,14 +107,18 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
     setCsvFeedback(null);
     setCsvFormatError(null);
 
-    if (!file.name.toLowerCase().endsWith('.csv')) {
+    const lowerName = file.name.toLowerCase();
+    const isSupported =
+      lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls');
+
+    if (!isSupported) {
       setCsvPreview(null);
       setCsvFormatError(
         isEn
-          ? 'Please select a valid .csv file. Download the standard CSV template above if needed.'
+          ? 'Please select a valid .csv, .xlsx or .xls file. Download a template above if needed.'
           : isEs
-          ? 'Selecciona un archivo .csv válido. Descarga la plantilla CSV estándar arriba si la necesitas.'
-          : 'Selecione apenas um arquivo no formato .csv. Caso precise, baixe o modelo CSV padrão acima.'
+          ? 'Selecciona un archivo .csv, .xlsx o .xls válido.'
+          : 'Selecione um arquivo .csv, .xlsx ou .xls válido. Caso precise, baixe um modelo acima.'
       );
       return;
     }
@@ -128,7 +132,7 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
       setCsvFormatError(
         err instanceof Error
           ? err.message
-          : 'Não foi possível ler o arquivo CSV selecionado.'
+          : 'Não foi possível ler a planilha selecionada.'
       );
     } finally {
       setParsingCsv(false);
@@ -143,10 +147,10 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
     setCsvFormatError(null);
     setCsvFeedback(
       isEn
-        ? `${count} record(s) from the CSV file were imported cleanly.`
+        ? `${count} record(s) from the spreadsheet were imported cleanly.`
         : isEs
-        ? `Se importaron ${count} registro(s) desde la planilla CSV.`
-        : `${count} lançamento(s) da planilha CSV importados e consolidados no aplicativo.`
+        ? `Se importaron ${count} registro(s) desde la planilla.`
+        : `${count} lançamento(s) da planilha importados e salvos no aplicativo.`
     );
   };
 
@@ -174,20 +178,21 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
     () =>
       isEn
         ? {
-            csvKicker: 'CSV Spreadsheet Import',
-            csvTitle: 'Import CSV Entries',
+            csvKicker: 'Spreadsheet Import',
+            csvTitle: 'Import CSV / Excel',
             csvDesc:
-              'Download the standard CSV template, fill in your dates, categories and amounts, then upload to validate and preview every row before saving.',
-            downloadTemplateBtn: 'Download CSV Template',
-            selectCsvBtn: 'Select CSV File',
-            parsingText: 'Validating CSV rows...',
-            clearPreview: 'Clear preview',
-            syncRecLabel: 'Also register items marked as recurring in Fixed Bills & Incomes',
-            confirmCsvBtn: 'Confirm CSV Import',
+              'Download the standard template (.csv or .xlsx), fill in dates, categories and amounts, and upload to validate before saving.',
+            downloadCsvBtn: 'CSV Template',
+            downloadXlsxBtn: 'Excel Template (.xlsx)',
+            selectCsvBtn: 'Select Spreadsheet (.csv / .xlsx)',
+            parsingText: 'Validating rows...',
+            clearPreview: 'Clear',
+            syncRecLabel: 'Also register items marked as recurring',
+            confirmCsvBtn: 'Confirm Import',
             pdfKicker: 'PDF Report Export',
             pdfTitle: 'Export PDF Report',
             pdfDesc:
-              'Generate an organized, readable PDF report with financial summary, income, expenses, recurrences, cashflow forecasts or detailed entries.',
+              'Generate a clean PDF report with summary, income, expenses, recurrences or entries for the selected period.',
             scopeLabel: 'Report content',
             periodLabel: 'Period',
             monthOption: 'Specific month',
@@ -198,20 +203,21 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
           }
         : isEs
         ? {
-            csvKicker: 'Importación de Planilla CSV',
-            csvTitle: 'Importar Planilla CSV',
+            csvKicker: 'Importación de Planilla',
+            csvTitle: 'Importar CSV / Excel',
             csvDesc:
-              'Descarga la plantilla CSV estándar, completa fechas, categorías y montos, y sube el archivo para validar y previsualizar antes de guardar.',
-            downloadTemplateBtn: 'Descargar Modelo CSV',
-            selectCsvBtn: 'Seleccionar Archivo CSV',
-            parsingText: 'Validando filas del CSV...',
-            clearPreview: 'Limpiar vista previa',
-            syncRecLabel: 'Registrar también ítems marcados como recurrentes en Cuentas Fijas',
-            confirmCsvBtn: 'Confirmar Importación CSV',
+              'Descarga la plantilla estándar (.csv o .xlsx), completa fechas, categorías y montos, y sube el archivo para validar antes de guardar.',
+            downloadCsvBtn: 'Modelo CSV',
+            downloadXlsxBtn: 'Modelo Excel (.xlsx)',
+            selectCsvBtn: 'Seleccionar Planilla (.csv / .xlsx)',
+            parsingText: 'Validando filas...',
+            clearPreview: 'Limpiar',
+            syncRecLabel: 'Registrar también ítems marcados como recurrentes',
+            confirmCsvBtn: 'Confirmar Importación',
             pdfKicker: 'Exportación de Informe en PDF',
             pdfTitle: 'Exportar Informe en PDF',
             pdfDesc:
-              'Genera un informe PDF organizado y legible con resumen financiero, ingresos, gastos, recurrencias, previsiones o movimientos según los filtros.',
+              'Genera un informe PDF limpio con resumen, ingresos, gastos, recurrencias o movimientos del período.',
             scopeLabel: 'Contenido del informe',
             periodLabel: 'Período',
             monthOption: 'Mes específico',
@@ -221,28 +227,29 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
             exportPdfBtn: 'Generar y Descargar PDF',
           }
         : {
-            csvKicker: 'Importação de Planilha CSV',
-            csvTitle: 'Importar Planilha CSV',
+            csvKicker: 'Importação de Planilha',
+            csvTitle: 'Importar Planilha (CSV / Excel)',
             csvDesc:
-              'Baixe o modelo CSV padrão para preenchimento correto e envie seu arquivo para validar datas, valores e categorias com pré-visualização antes de gravar.',
-            downloadTemplateBtn: 'Baixar Modelo CSV Padrão',
-            selectCsvBtn: 'Selecionar Arquivo CSV',
-            parsingText: 'Validando linhas da planilha CSV...',
+              'Baixe a planilha modelo (.csv ou .xlsx) e envie seu arquivo para validar datas, valores e categorias com prévia antes de gravar.',
+            downloadCsvBtn: 'Baixar Modelo CSV',
+            downloadXlsxBtn: 'Baixar Modelo Excel (.xlsx)',
+            selectCsvBtn: 'Selecionar Planilha (.csv / .xlsx)',
+            parsingText: 'Validando planilha...',
             clearPreview: 'Limpar prévia',
             syncRecLabel:
               'Cadastrar também itens marcados como recorrentes em Contas Fixas e Recebimentos',
-            confirmCsvBtn: 'Confirmar Importação CSV',
-            pdfKicker: 'Exportação de Relatório em PDF',
+            confirmCsvBtn: 'Confirmar Importação',
+            pdfKicker: 'Exportação em PDF',
             pdfTitle: 'Exportar Relatório em PDF',
             pdfDesc:
-              'Gere um relatório PDF organizado e legível com resumo financeiro, receitas, despesas, recorrências, previsões ou lançamentos conforme os filtros.',
+              'Gere um relatório PDF limpo com resumo financeiro, receitas, despesas, recorrências ou lançamentos do período.',
             scopeLabel: 'Conteúdo do relatório',
             periodLabel: 'Período',
             monthOption: 'Mês específico',
             yearOption: 'Ano completo',
             selectMonthLabel: 'Mês de referência',
             statusLabel: 'Status dos lançamentos',
-            exportPdfBtn: 'Gerar e Baixar Relatório PDF',
+            exportPdfBtn: 'Gerar e Baixar PDF',
           },
     [isEn, isEs]
   );
@@ -292,21 +299,30 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
-              onClick={handleDownloadCsvTemplate}
-              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors whitespace-nowrap"
+              onClick={() => handleDownloadTemplate('csv')}
+              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors whitespace-nowrap"
             >
               <Download className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0" />
-              <span>{labels.downloadTemplateBtn}</span>
+              <span>{labels.downloadCsvBtn}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleDownloadTemplate('xlsx')}
+              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors whitespace-nowrap"
+            >
+              <Download className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>{labels.downloadXlsxBtn}</span>
             </button>
 
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,text/csv"
-              onChange={handleSelectCsvFile}
+              accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              onChange={handleSelectSpreadsheetFile}
               className="hidden"
             />
             <button
@@ -327,13 +343,13 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
           <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] text-xs text-slate-500 dark:text-slate-400 space-y-1">
             <p className="font-medium text-slate-700 dark:text-slate-300">
               {isEn
-                ? 'Expected CSV columns:'
+                ? 'Expected columns:'
                 : isEs
-                ? 'Columnas esperadas en el CSV:'
-                : 'Colunas aceitas na planilha CSV:'}
+                ? 'Columnas esperadas:'
+                : 'Colunas da planilha:'}
             </p>
             <p className="leading-relaxed">
-              Data · Tipo · Categoria · Descrição · Valor · Modalidade · Cartão ou Conta · Parcela · Recorrente · Status · Observações
+              Data · Tipo · Categoria · Descrição · Valor · Modalidade · Cartão ou Conta · Parcela · Recorrente · Status
             </p>
           </div>
 

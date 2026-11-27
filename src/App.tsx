@@ -32,15 +32,12 @@ import {
 } from './utils/financeEngine';
 import { sendCashflowAlertNotification } from './utils/permissions';
 import { getInvoiceMonthKey } from './utils/creditCardsEngine';
-import { generatePrivateBankingAnnualPDF } from './utils/pdfReport';
 import {
   AutoBackupStatus,
-  BackupMeta,
   createBackupSnapshotAndPersist,
   exportVaultBackupJSON,
   getAutoBackupStatus,
   hasOperationalDataForBackup,
-  loadBackupMeta,
   markBackupCompleted,
   markBackupDirty,
   runAutoBackupIfDue,
@@ -82,7 +79,6 @@ import { SettingsView } from './components/SettingsView';
 import { CellDetailDrawer } from './components/CellDetailDrawer';
 import { NewEntryModal } from './components/NewEntryModal';
 import { LockScreenModal } from './components/LockScreenModal';
-import { ReportsImportModal } from './components/ReportsImportModal';
 import { ValidatedImportRow } from './utils/spreadsheetReports';
 
 interface AuthSession {
@@ -252,12 +248,8 @@ export default function App() {
   const [newEntryVoiceAutoStart, setNewEntryVoiceAutoStart] = useState(false);
   const [cardPurchaseTrigger, setCardPurchaseTrigger] = useState(0);
   const [selectedCell, setSelectedCell] = useState<{ rowId: string; month: number } | null>(null);
-  const [reportsModalOpen, setReportsModalOpen] = useState(false);
-  const [reportsModalMode, setReportsModalMode] = useState<'export' | 'import'>('export');
   const [isLocked, setIsLocked] = useState(false);
-  const [backupMeta, setBackupMeta] = useState<BackupMeta>({ lastBackupAt: null, dirty: false });
   const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null);
-  const [backupReminderDismissed, setBackupReminderDismissed] = useState(false);
   const [undoToast, setUndoToast] = useState<{
     id: string;
     label: string;
@@ -317,8 +309,7 @@ export default function App() {
     if (currentSig !== lastBackupDataSigRef.current) {
       lastBackupDataSigRef.current = currentSig;
       if (hasOperationalDataForBackup(state)) {
-        setBackupMeta(markBackupDirty(authSession.cpfId));
-        setBackupReminderDismissed(false);
+        markBackupDirty(authSession.cpfId);
       }
     }
 
@@ -399,9 +390,6 @@ export default function App() {
             uploadServerBackupSnapshot(authSession.token, sanitizedState, source)
         );
         setAutoBackupStatus(res.status);
-        if (res.ran) {
-          setBackupMeta(loadBackupMeta(authSession.cpfId));
-        }
       } catch {
         const fallback = await getAutoBackupStatus(authSession.cpfId);
         setAutoBackupStatus(fallback);
@@ -494,8 +482,6 @@ export default function App() {
       kycDocumentType: payload.profile.kycDocumentType,
       kycDocumentLast4: payload.profile.kycDocumentLast4,
     });
-    setBackupMeta(loadBackupMeta(payload.cpfId));
-    setBackupReminderDismissed(false);
     setActiveTab('matrix');
     setIsLocked(false);
     setSelectedCell(null);
@@ -1009,21 +995,12 @@ export default function App() {
     }
   };
 
-  // PDF Report & JSON Backup Export
-  const handleExportPDF = () => {
-    try {
-      generatePrivateBankingAnnualPDF(state, totals);
-    } catch {
-      // Silencia erro eventual caso navegador bloqueie download
-    }
-  };
-
+  // JSON Backup Export
   const handleExportJSONBackup = () => {
     if (!authSession) return;
     try {
       exportVaultBackupJSON(state, authSession.profile);
-      setBackupMeta(markBackupCompleted(authSession.cpfId));
-      setBackupReminderDismissed(false);
+      markBackupCompleted(authSession.cpfId);
     } catch {
       // Ignore eventual browser download restriction
     }
@@ -1205,13 +1182,12 @@ export default function App() {
         uploadServerBackupSnapshot(authSession.token, sanitizedState, source)
     );
     setAutoBackupStatus(status);
-    setBackupMeta(loadBackupMeta(authSession.cpfId));
   };
 
   const handleShareOrDownloadBackup = async () => {
     if (!authSession) return;
     await shareOrDownloadLatestBackupJSON(authSession.cpfId, state, authSession.profile);
-    setBackupMeta(markBackupCompleted(authSession.cpfId));
+    markBackupCompleted(authSession.cpfId);
   };
 
   const selectedRow = selectedCell
@@ -1288,16 +1264,6 @@ export default function App() {
                   totals={totals}
                   alerts={alerts}
                   settings={state.settings}
-                  backupReminderVisible={
-                    backupMeta.dirty &&
-                    !backupReminderDismissed &&
-                    hasOperationalDataForBackup(state)
-                  }
-                  isOfflineVault={
-                    authSession.token.startsWith('offline_') ||
-                    (typeof navigator !== 'undefined' && navigator.onLine === false)
-                  }
-                  lastBackupAt={backupMeta.lastBackupAt}
                   onSelectCell={(row, month) => setSelectedCell({ rowId: row.id, month })}
                   onUpdateSettings={updateSettings}
                   onUpdateRow={handleUpdateRow}
@@ -1307,13 +1273,6 @@ export default function App() {
                   onAddRecurringBill={handleAddRecurringBill}
                   onUpdateRecurringBill={handleUpdateRecurringBill}
                   onDeleteRecurringBill={handleDeleteRecurringBill}
-                  onExportPDF={handleExportPDF}
-                  onExportJSON={handleExportJSONBackup}
-                  onOpenReportsModal={(mode) => {
-                    setReportsModalMode(mode);
-                    setReportsModalOpen(true);
-                  }}
-                  onDismissBackupReminder={() => setBackupReminderDismissed(true)}
                   onOpenGoalSettings={() => {
                     setSettingsSubTab('goals');
                     setActiveTab('settings');
@@ -1421,12 +1380,7 @@ export default function App() {
                   onAddGoal={handleAddGoal}
                   onUpdateGoal={handleUpdateGoal}
                   onDeleteGoal={handleDeleteGoal}
-                  onExportPDF={handleExportPDF}
                   onExportJSON={handleExportJSONBackup}
-                  onOpenReportsModal={(mode) => {
-                    setReportsModalMode(mode);
-                    setReportsModalOpen(true);
-                  }}
                   onLoadDemo2026Data={handleLoadDemo2026Data}
                   onClearOperationalData={handleClearOperationalData}
                   onImportBackup={handleImportBackup}
@@ -1558,15 +1512,6 @@ export default function App() {
         language={state.settings.language}
         onUnlock={() => setIsLocked(false)}
         onLogout={handleLogout}
-      />
-
-      <ReportsImportModal
-        isOpen={reportsModalOpen}
-        initialMode={reportsModalMode}
-        state={state}
-        totals={totals}
-        onClose={() => setReportsModalOpen(false)}
-        onConfirmImport={handleConfirmSpreadsheetImport}
       />
 
       {undoToast && (

@@ -728,8 +728,8 @@ const PT_TRANSLATIONS: AppTranslations = {
   topBar: {
     tabs: {
       matrix: {
-        section: 'Grade Matricial Anual',
-        subtitle: 'Saldo em conta, faturas, fluxo consolidado de receitas e despesas',
+        section: 'Painel Financeiro',
+        subtitle: 'Saldo disponível, previsão do mês, caixinha e cartões',
       },
       timeline: {
         section: 'Timeline & Projeção de Caixa',
@@ -753,7 +753,7 @@ const PT_TRANSLATIONS: AppTranslations = {
       },
       downloads: {
         section: 'Central de Download',
-        subtitle: 'Importação de planilha CSV e exportação de relatório em PDF',
+        subtitle: 'Importação de planilha (CSV/Excel) e relatório em PDF',
       },
       settings: {
         section: 'Central de Configurações',
@@ -1361,7 +1361,7 @@ const EN_TRANSLATIONS: AppTranslations = {
       },
       downloads: {
         section: 'Download Center',
-        subtitle: 'CSV spreadsheet import and PDF report export',
+        subtitle: 'CSV/Excel spreadsheet import and PDF report export',
       },
       settings: {
         section: 'Settings Center',
@@ -1969,7 +1969,7 @@ const ES_TRANSLATIONS: AppTranslations = {
       },
       downloads: {
         section: 'Centro de Descargas',
-        subtitle: 'Importación de planilla CSV y exportación de informe en PDF',
+        subtitle: 'Importación de planilla (CSV/Excel) e informe en PDF',
       },
       settings: {
         section: 'Centro de Configuración',

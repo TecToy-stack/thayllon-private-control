@@ -157,15 +157,10 @@ export const MonthlyBudgetHero: React.FC<MonthlyBudgetHeroProps> = ({
       <section className="rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
         {/* Top Bar with Period & Category Filters */}
         <div className="px-5 py-3.5 bg-slate-50/90 dark:bg-[#0D1320] border-b border-slate-200 dark:border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
             <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0" />
-            <div className="min-w-0">
-              <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                {labels.heroTitle} · {monthNamesFull[safeMonth]} {activeYear}
-              </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                {labels.heroFormulaHint}
-              </div>
+            <div className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white truncate">
+              {labels.heroTitle} · {monthNamesFull[safeMonth]} {activeYear}
             </div>
           </div>
 
