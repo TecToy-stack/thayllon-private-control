@@ -269,10 +269,19 @@ export const MonthlyBudgetHero: React.FC<MonthlyBudgetHeroProps> = ({
             {/* 4-Term Formula Hairline Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 dark:divide-white/[0.08] rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0D1320]">
               <div className="p-3">
-                <div className="text-[11px] text-slate-500 dark:text-slate-400">{labels.termBalance}</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {accounts.some((a) => a.status === 'active' && a.type !== 'Cartão de Crédito')
+                    ? labels.termBalance
+                    : 'Saldo ant. (M-1)'}
+                </div>
                 <div className="mt-1 text-sm font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
                   {formatBRL(forecast.currentAccountBalance, privacyMode)}
                 </div>
+                {forecast.isolatedSavingsTotal > 0 && (
+                  <div className="text-[10px] font-mono tabular-nums text-blue-600 dark:text-blue-400 truncate">
+                    Caixinha: {formatBRL(forecast.isolatedSavingsTotal, privacyMode)}
+                  </div>
+                )}
               </div>
               <div className="p-3">
                 <div className="text-[11px] text-slate-500 dark:text-slate-400">

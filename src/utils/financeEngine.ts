@@ -1379,11 +1379,30 @@ export function getEffectiveRecurringStatus(
   return { status: 'pending', isDueSoon: false, daysUntilDue: null };
 }
 
+export function computePreviousMonthCarryover(
+  totals: MatrixTotals,
+  focusMonth: number
+): number {
+  const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  let running = 0;
+  for (let m = 0; m < safeMonth; m++) {
+    const inc = totals.incomeMonthly[m] ?? 0;
+    const exp = totals.totalExpenseMonthly[m] ?? 0;
+    const sav = totals.savingsMonthly[m] ?? 0;
+    if (inc !== 0 || exp !== 0) {
+      running += inc - exp - sav;
+    }
+  }
+  return Number(running.toFixed(2));
+}
+
 export interface MonthlyBudgetForecast {
   year: number;
   month: number;
   categoryRowId: string | 'all';
   currentAccountBalance: number;
+  previousMonthCarryover: number;
+  isolatedSavingsTotal: number;
   realizedIncome: number;
   expectedPendingIncome: number;
   totalForecastIncome: number;
@@ -1422,6 +1441,7 @@ export function computeMonthlyBudgetForecast(params: {
     creditCards,
     cardPurchases,
     paidCardInvoices,
+    totals,
     year,
     focusMonth,
     categoryRowId = 'all',
@@ -1430,12 +1450,19 @@ export function computeMonthlyBudgetForecast(params: {
   const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
   const rowMap = new Map(rows.map((r) => [r.id, r]));
 
+  const hasManualAccounts = accounts.some((a) => a.status === 'active' && a.type !== 'Cartão de Crédito');
   const currentAccountBalance = Number(
     accounts
       .filter((a) => a.status === 'active' && a.type !== 'Cartão de Crédito')
       .reduce((sum, a) => sum + (Number.isFinite(a.balance) ? a.balance : 0), 0)
       .toFixed(2)
   );
+  const previousMonthCarryover =
+    categoryRowId === 'all' ? computePreviousMonthCarryover(totals, safeMonth) : 0;
+  const isolatedSavingsTotal = Number((totals.savingsAnnual ?? 0).toFixed(2));
+  const effectiveCarryOrBalance = hasManualAccounts
+    ? currentAccountBalance
+    : previousMonthCarryover;
 
   const monthEntries = entries.filter((e) => {
     if (e.year !== year || e.month !== safeMonth) return false;
@@ -1461,6 +1488,7 @@ export function computeMonthlyBudgetForecast(params: {
       if (e.status === 'paid') realizedExpense += amt;
       else pendingScheduledDebits += amt;
     }
+    // Note: block === 'savings' (Caixinha / Guardado) stays strictly isolated in isolatedSavingsTotal
   });
 
   let pendingRecurringIncome = 0;
@@ -1504,14 +1532,14 @@ export function computeMonthlyBudgetForecast(params: {
   );
   const totalForecastExpense = Number((realizedExpense + totalPendingCommitments).toFixed(2));
 
-  // Formula requested:
-  // saldoAtual + receitasPrevistasConfirmadas - gastosJaRealizados - contasFixasECompromissosPendentes
+  // Formula:
+  // (saldoAtual ou saldoAnteriorLivre) + receitasPrevistasConfirmadas - gastosJaRealizados - contasFixasECompromissosPendentes
   const safeToSpendRemaining = Number(
-    (currentAccountBalance + totalForecastIncome - realizedExpense - totalPendingCommitments).toFixed(2)
+    (effectiveCarryOrBalance + totalForecastIncome - realizedExpense - totalPendingCommitments).toFixed(2)
   );
   const projectedMonthClose = Number((totalForecastIncome - totalForecastExpense).toFixed(2));
 
-  const budgetBase = Math.max(0, currentAccountBalance + totalForecastIncome);
+  const budgetBase = Math.max(0, effectiveCarryOrBalance + totalForecastIncome);
   const budgetUtilizationPct =
     budgetBase > 0
       ? Number(Math.min(180, (totalForecastExpense / budgetBase) * 100).toFixed(1))
@@ -1530,7 +1558,9 @@ export function computeMonthlyBudgetForecast(params: {
     year,
     month: safeMonth,
     categoryRowId,
-    currentAccountBalance,
+    currentAccountBalance: effectiveCarryOrBalance,
+    previousMonthCarryover,
+    isolatedSavingsTotal,
     realizedIncome: Number(realizedIncome.toFixed(2)),
     expectedPendingIncome,
     totalForecastIncome,

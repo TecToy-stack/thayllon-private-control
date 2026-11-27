@@ -16,6 +16,8 @@ import {
   Upload,
   Target,
   Calendar,
+  Mic,
+  Copy,
 } from 'lucide-react';
 import {
   AlertItem,
@@ -40,6 +42,7 @@ import { CreditCardPieChart } from './CreditCardPieChart';
 import {
   computeGoalProgress,
   computeMonthSpotlight,
+  computePreviousMonthCarryover,
   formatBRL,
   formatCompactDay,
 } from '../utils/financeEngine';
@@ -84,6 +87,8 @@ interface MatrixGridViewProps {
   onOpenAccountsHub: () => void;
   onOpenCardsHub: () => void;
   onQuickEntry: (flowType: 'income' | 'expense') => void;
+  onQuickVoiceEntry?: () => void;
+  onDuplicateEntryById?: (entryId: string) => void;
   onQuickCardPurchase: () => void;
 }
 
@@ -119,6 +124,8 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   onOpenAccountsHub,
   onOpenCardsHub,
   onQuickEntry,
+  onQuickVoiceEntry,
+  onDuplicateEntryById,
   onQuickCardPurchase,
 }) => {
   const [search, setSearch] = useState('');
@@ -177,7 +184,15 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
     [accounts]
   );
 
-  const displayAccountBalance = accounts.length > 0 ? accountBalanceTotal : spotlight.result;
+  const previousMonthCarryover = useMemo(
+    () => computePreviousMonthCarryover(totals, focusMonth),
+    [totals, focusMonth]
+  );
+
+  const displayAccountBalance =
+    accounts.length > 0
+      ? accountBalanceTotal
+      : Number((spotlight.result + previousMonthCarryover).toFixed(2));
   const displayMonthInvoice =
     creditCards.length > 0 ? cardsOverview.monthTotalInvoice : spotlight.totalCardInvoices;
 
@@ -410,6 +425,17 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
           >
             <span>- Despesa</span>
           </button>
+          {onQuickVoiceEntry && (
+            <button
+              type="button"
+              onClick={onQuickVoiceEntry}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors whitespace-nowrap shrink-0"
+              title="Lançar gasto ou receita falando uma frase"
+            >
+              <Mic className="h-3.5 w-3.5" />
+              <span>Por Voz</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={onQuickCardPurchase}
@@ -503,6 +529,13 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             <div className="mt-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
               Entradas {formatBRL(spotlight.income, privacyMode)} · Saídas {formatBRL(spotlight.totalExpense, privacyMode)}
             </div>
+            {(previousMonthCarryover !== 0 || totals.savingsAnnual > 0) && (
+              <div className="mt-0.5 text-[10px] font-mono tabular-nums text-blue-600 dark:text-blue-400 truncate">
+                {previousMonthCarryover !== 0 && `Ant.: ${formatBRL(previousMonthCarryover, privacyMode, true)}`}
+                {previousMonthCarryover !== 0 && totals.savingsAnnual > 0 && ' · '}
+                {totals.savingsAnnual > 0 && `Caixinha isolada: ${formatBRL(totals.savingsAnnual, privacyMode)}`}
+              </div>
+            )}
           </div>
 
           <div className="p-5">
@@ -858,18 +891,34 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                           </div>
                         </div>
 
-                        <div
-                          className={`font-mono font-semibold tabular-nums shrink-0 ${
-                            tx.isDeduplicated
-                              ? 'text-slate-400 dark:text-slate-500 line-through'
-                              : isIncome
-                              ? 'text-emerald-600 dark:text-emerald-400'
-                              : tx.block === 'savings'
-                              ? 'text-blue-600 dark:text-blue-400'
-                              : 'text-slate-900 dark:text-slate-100'
-                          }`}
-                        >
-                          {formatBRL(isIncome ? tx.amount : -tx.amount, privacyMode, isIncome)}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div
+                            className={`font-mono font-semibold tabular-nums ${
+                              tx.isDeduplicated
+                                ? 'text-slate-400 dark:text-slate-500 line-through'
+                                : isIncome
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : tx.block === 'savings'
+                                ? 'text-blue-600 dark:text-blue-400'
+                                : 'text-slate-900 dark:text-slate-100'
+                            }`}
+                          >
+                            {formatBRL(isIncome ? tx.amount : -tx.amount, privacyMode, isIncome)}
+                          </div>
+                          {onDuplicateEntryById && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDuplicateEntryById(tx.id);
+                              }}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/15 transition-colors"
+                              title="Duplicar lançamento em 1 toque"
+                              aria-label="Duplicar lançamento"
+                            >
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     );

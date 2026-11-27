@@ -23,6 +23,10 @@ import {
   Globe,
   UserCheck,
   FileSpreadsheet,
+  Mic,
+  Wifi,
+  FolderCheck,
+  ExternalLink,
 } from 'lucide-react';
 import {
   AlertItem,
@@ -73,6 +77,15 @@ import {
   listAutoBackupSnapshots,
   parseBackupSnapshotState,
 } from '../utils/backup';
+import {
+  AppPermissionKind,
+  AppPermissionStatus,
+  getPermissionsSnapshot,
+  isAndroidNativeApp,
+  openNativeAppSettings,
+  PermissionsSnapshot,
+  requestAppPermission,
+} from '../utils/permissions';
 
 interface SettingsViewProps {
   state: AppState;
@@ -225,11 +238,63 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
+  const [permissionsSnapshot, setPermissionsSnapshot] = useState<PermissionsSnapshot | null>(null);
+  const [permBusy, setPermBusy] = useState(false);
+
+  const reloadPermissions = async () => {
+    try {
+      const snap = await getPermissionsSnapshot();
+      if (isMountedRef.current) setPermissionsSnapshot(snap);
+    } catch {
+      // Ignore
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'security') {
       void reloadSnapshots();
+      void reloadPermissions();
     }
   }, [activeTab, profile.cpfId, autoBackupStatus?.lastAutoBackupAt]);
+
+  const handleRequestPermissionItem = async (kind: AppPermissionKind | 'all') => {
+    setPermBusy(true);
+    try {
+      const next = await requestAppPermission(kind);
+      if (isMountedRef.current) setPermissionsSnapshot(next);
+    } finally {
+      if (isMountedRef.current) setPermBusy(false);
+    }
+  };
+
+  const renderPermissionBadge = (status: AppPermissionStatus) => {
+    if (status === 'granted') {
+      return (
+        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+          Concedida
+        </span>
+      );
+    }
+    if (status === 'denied') {
+      return (
+        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-700 dark:text-red-300 border border-red-500/30">
+          Negada
+        </span>
+      );
+    }
+    if (status === 'unsupported') {
+      return (
+        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-slate-400">
+          Indisponível
+        </span>
+      );
+    }
+    return (
+      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+        Pendente
+      </span>
+    );
+  };
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -1903,6 +1968,143 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 {profile.hasPasswordLogin ? 'Atualizar usuário e senha' : 'Ativar usuário e senha'}
               </button>
             </form>
+          </div>
+
+          {/* 2B. App Permissions (Notifications, Microphone Voice, Storage, Biometrics, Network) */}
+          <div className="p-6 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  Permissões do Aplicativo ({permissionsSnapshot?.platform === 'android' ? 'Android' : 'Navegador'})
+                </h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Gerencie as permissões usadas pelo ORBE Finanças para lembretes de vencimentos, lançamento por voz, exportação de backups/relatórios e biometria.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={permBusy}
+                  onClick={() => void handleRequestPermissionItem('all')}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
+                >
+                  {permBusy ? 'Solicitando...' : 'Solicitar Permissões'}
+                </button>
+                {(isAndroidNativeApp() || permissionsSnapshot?.requiresSettings) && (
+                  <button
+                    type="button"
+                    onClick={() => void openNativeAppSettings()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-white/[0.08]"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    <span>Ajustes do App</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {permissionsSnapshot && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.07] flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100">
+                      <Bell className="h-3.5 w-3.5 text-[#C9A86A]" />
+                      <span>Notificações</span>
+                      {renderPermissionBadge(permissionsSnapshot.notifications)}
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                      Alertas de débitos próximos, faturas e recebimentos.
+                    </p>
+                  </div>
+                  {permissionsSnapshot.notifications !== 'granted' &&
+                    permissionsSnapshot.notifications !== 'unsupported' && (
+                      <button
+                        type="button"
+                        disabled={permBusy}
+                        onClick={() => void handleRequestPermissionItem('notifications')}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] shrink-0"
+                      >
+                        Ativar
+                      </button>
+                    )}
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.07] flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100">
+                      <Mic className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                      <span>Microfone (Voz)</span>
+                      {renderPermissionBadge(permissionsSnapshot.microphone)}
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                      Lançamento rápido de gastos e receitas por comando de voz.
+                    </p>
+                  </div>
+                  {permissionsSnapshot.microphone !== 'granted' &&
+                    permissionsSnapshot.microphone !== 'unsupported' && (
+                      <button
+                        type="button"
+                        disabled={permBusy}
+                        onClick={() => void handleRequestPermissionItem('microphone')}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] shrink-0"
+                      >
+                        Ativar
+                      </button>
+                    )}
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.07] flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100">
+                      <FolderCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>Arquivos & Backups</span>
+                      {renderPermissionBadge(permissionsSnapshot.storage)}
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                      Importação de CSV e exportação de relatórios PDF / backups JSON.
+                    </p>
+                  </div>
+                  {permissionsSnapshot.storage !== 'granted' &&
+                    permissionsSnapshot.storage !== 'unsupported' && (
+                      <button
+                        type="button"
+                        disabled={permBusy}
+                        onClick={() => void handleRequestPermissionItem('storage')}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] shrink-0"
+                      >
+                        Ativar
+                      </button>
+                    )}
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.07] flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100">
+                      <Fingerprint className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+                      <span>Biometria</span>
+                      {renderPermissionBadge(permissionsSnapshot.biometrics)}
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                      {permissionsSnapshot.biometricsLabel} ·{' '}
+                      <span className="inline-flex items-center gap-1">
+                        <Wifi className="h-3 w-3 inline" />
+                        {permissionsSnapshot.networkOnline ? 'Rede online' : 'Modo offline'}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {permissionsSnapshot?.requiresSettings && (
+              <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-500/30 text-[11px] text-amber-800 dark:text-amber-300">
+                Alguma permissão foi negada anteriormente.{' '}
+                {isAndroidNativeApp()
+                  ? 'Toque em "Ajustes do App" acima para liberar manualmente em Permissões.'
+                  : 'Libere o acesso nas configurações de site do navegador (ícone de cadeado ao lado do endereço).'}
+              </div>
+            )}
           </div>
 
           {/* 3. Portability, Operational Base & Reinstall Recovery */}

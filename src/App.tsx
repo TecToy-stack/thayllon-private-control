@@ -25,7 +25,12 @@ import {
   MAX_BANK_ACCOUNTS,
   MONTH_NAMES_SHORT,
 } from './data/initialData';
-import { computeAlerts, computeMatrixTotals } from './utils/financeEngine';
+import {
+  computeAlerts,
+  computeMatrixTotals,
+  computeUpcomingCashflowAlerts,
+} from './utils/financeEngine';
+import { sendCashflowAlertNotification } from './utils/permissions';
 import { getInvoiceMonthKey } from './utils/creditCardsEngine';
 import { generatePrivateBankingAnnualPDF } from './utils/pdfReport';
 import {
@@ -56,6 +61,8 @@ import {
   PlusCircle,
   CreditCard,
   Settings as SettingsIcon,
+  RotateCcw,
+  X,
 } from 'lucide-react';
 import { OfflineIndicator } from './components/PWAInstallButton';
 import {
@@ -242,6 +249,7 @@ export default function App() {
   const [newEntryFlowType, setNewEntryFlowType] = useState<'income' | 'expense' | undefined>(
     undefined
   );
+  const [newEntryVoiceAutoStart, setNewEntryVoiceAutoStart] = useState(false);
   const [cardPurchaseTrigger, setCardPurchaseTrigger] = useState(0);
   const [selectedCell, setSelectedCell] = useState<{ rowId: string; month: number } | null>(null);
   const [reportsModalOpen, setReportsModalOpen] = useState(false);
@@ -250,12 +258,29 @@ export default function App() {
   const [backupMeta, setBackupMeta] = useState<BackupMeta>({ lastBackupAt: null, dirty: false });
   const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null);
   const [backupReminderDismissed, setBackupReminderDismissed] = useState(false);
+  const [undoToast, setUndoToast] = useState<{
+    id: string;
+    label: string;
+    restore: () => void;
+  } | null>(null);
 
   const syncTimeoutRef = useRef<number | null>(null);
+  const undoTimerRef = useRef<number | null>(null);
   const skipNextSyncRef = useRef(false);
   const lastBackupDataSigRef = useRef<string>('');
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  const triggerUndoToast = (label: string, restore: () => void) => {
+    if (undoTimerRef.current !== null) {
+      window.clearTimeout(undoTimerRef.current);
+    }
+    const toastId = `undo-${Date.now()}`;
+    setUndoToast({ id: toastId, label, restore });
+    undoTimerRef.current = window.setTimeout(() => {
+      setUndoToast((cur) => (cur?.id === toastId ? null : cur));
+    }, 6500);
+  };
 
   // Limpa chave legada v1 para garantir Primeiro Acesso Real limpo
   useEffect(() => {
@@ -401,6 +426,54 @@ export default function App() {
     [state.rows, state.entries, totals, state.settings]
   );
 
+  // Dispatch daily deduplicated local/browser notifications for due/upcoming cashflow alerts
+  useEffect(() => {
+    if (!authSession || isLocked || state.settings.notificationsEnabled === false) return;
+    const upcoming = computeUpcomingCashflowAlerts({
+      recurringBills: state.recurringBills ?? [],
+      entries: state.entries,
+      creditCards: state.creditCards ?? [],
+      cardPurchases: state.cardPurchases ?? [],
+      paidCardInvoices: state.paidCardInvoices ?? {},
+      rows: state.rows,
+      year: state.settings.activeYear,
+      focusMonth: state.settings.focusMonth ?? new Date().getMonth(),
+      leadDays: state.settings.alertLeadDays ?? 3,
+    });
+    upcoming.slice(0, 4).forEach((item) => {
+      const prefix =
+        item.kind === 'income'
+          ? 'Recebimento previsto'
+          : item.urgency === 'overdue'
+          ? 'Débito vencido'
+          : item.urgency === 'today'
+          ? 'Vence hoje'
+          : `Vence em ${item.daysDiff} dia(s)`;
+      const formattedAmt = new Intl.NumberFormat('pt-BR', {
+        style: 'currency',
+        currency: 'BRL',
+      }).format(item.amount);
+      void sendCashflowAlertNotification(
+        `${prefix}: ${item.title}`,
+        `${item.categoryLabel} · ${formattedAmt} (Dia ${String(item.day).padStart(2, '0')})`,
+        item.id
+      );
+    });
+  }, [
+    authSession,
+    isLocked,
+    state.settings.notificationsEnabled,
+    state.settings.alertLeadDays,
+    state.settings.activeYear,
+    state.settings.focusMonth,
+    state.recurringBills,
+    state.entries,
+    state.creditCards,
+    state.cardPurchases,
+    state.paidCardInvoices,
+    state.rows,
+  ]);
+
   const handleAuthenticated = (payload: AuthenticatedSessionPayload) => {
     const normalized = normalizeRestoredState(payload.appState);
     skipNextSyncRef.current = true;
@@ -498,10 +571,43 @@ export default function App() {
   };
 
   const handleDeleteEntry = (id: string) => {
+    const removed = stateRef.current.entries.find((e) => e.id === id);
     setState((prev) => ({
       ...prev,
       entries: prev.entries.filter((e) => e.id !== id),
     }));
+    if (removed) {
+      triggerUndoToast(`Lançamento "${removed.merchant || removed.description}" removido`, () => {
+        setState((prev) =>
+          prev.entries.some((e) => e.id === removed.id)
+            ? prev
+            : { ...prev, entries: [...prev.entries, removed] }
+        );
+      });
+    }
+  };
+
+  const handleDuplicateEntryById = (id: string) => {
+    const source = stateRef.current.entries.find((e) => e.id === id);
+    if (!source) return;
+    handleAddEntry({
+      rowId: source.rowId,
+      year: source.year,
+      month: source.month,
+      day: source.day,
+      amount: source.amount,
+      description: source.description,
+      merchant: source.merchant,
+      paymentMethod: source.paymentMethod,
+      entryNature: source.entryNature,
+      installments: source.installments,
+      installmentCurrent: source.installmentCurrent,
+      installmentTotal: source.installmentTotal,
+      accountId: source.accountId,
+      source: 'manual',
+      status: source.status,
+      note: source.note,
+    });
   };
 
   const handleReplaceCellTotal = (rowId: string, month: number, newTotal: number, note?: string) => {
@@ -787,10 +893,20 @@ export default function App() {
   };
 
   const handleDeleteCardPurchase = (purchaseId: string) => {
+    const removed = (stateRef.current.cardPurchases ?? []).find((p) => p.id === purchaseId);
     setState((prev) => ({
       ...prev,
       cardPurchases: (prev.cardPurchases ?? []).filter((p) => p.id !== purchaseId),
     }));
+    if (removed) {
+      triggerUndoToast(`Compra "${removed.description}" removida`, () => {
+        setState((prev) =>
+          (prev.cardPurchases ?? []).some((p) => p.id === removed.id)
+            ? prev
+            : { ...prev, cardPurchases: [...(prev.cardPurchases ?? []), removed] }
+        );
+      });
+    }
   };
 
   const handleToggleCardInvoicePaid = (cardId: string, year: number, month: number) => {
@@ -877,10 +993,20 @@ export default function App() {
   };
 
   const handleDeleteRecurringBill = (id: string) => {
+    const removed = (stateRef.current.recurringBills ?? []).find((b) => b.id === id);
     setState((prev) => ({
       ...prev,
       recurringBills: (prev.recurringBills ?? []).filter((b) => b.id !== id),
     }));
+    if (removed) {
+      triggerUndoToast(`Recorrência "${removed.title}" removida`, () => {
+        setState((prev) =>
+          (prev.recurringBills ?? []).some((b) => b.id === removed.id)
+            ? prev
+            : { ...prev, recurringBills: [...(prev.recurringBills ?? []), removed] }
+        );
+      });
+    }
   };
 
   // PDF Report & JSON Backup Export
@@ -1195,9 +1321,16 @@ export default function App() {
                   onOpenAccountsHub={() => setActiveTab('accounts')}
                   onOpenCardsHub={() => setActiveTab('cards')}
                   onQuickEntry={(flowType) => {
+                    setNewEntryVoiceAutoStart(false);
                     setNewEntryFlowType(flowType);
                     setNewEntryModalOpen(true);
                   }}
+                  onQuickVoiceEntry={() => {
+                    setNewEntryFlowType(undefined);
+                    setNewEntryVoiceAutoStart(true);
+                    setNewEntryModalOpen(true);
+                  }}
+                  onDuplicateEntryById={handleDuplicateEntryById}
                   onQuickCardPurchase={() => {
                     setActiveTab('cards');
                     setCardPurchaseTrigger((n) => n + 1);
@@ -1408,8 +1541,12 @@ export default function App() {
         activeYear={state.settings.activeYear}
         defaultMonth={state.settings.focusMonth ?? 10}
         initialFlowType={newEntryFlowType}
+        autoStartVoice={newEntryVoiceAutoStart}
         language={state.settings.language}
-        onClose={() => setNewEntryModalOpen(false)}
+        onClose={() => {
+          setNewEntryModalOpen(false);
+          setNewEntryVoiceAutoStart(false);
+        }}
         onAddEntry={handleAddEntry}
       />
 
@@ -1431,6 +1568,34 @@ export default function App() {
         onClose={() => setReportsModalOpen(false)}
         onConfirmImport={handleConfirmSpreadsheetImport}
       />
+
+      {undoToast && (
+        <div
+          role="status"
+          className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-[#1A2234] text-white border border-white/15 shadow-2xl text-xs max-w-[92vw]"
+        >
+          <span className="truncate">{undoToast.label}</span>
+          <button
+            type="button"
+            onClick={() => {
+              undoToast.restore();
+              setUndoToast(null);
+            }}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#C9A86A] text-[#090D16] font-semibold hover:opacity-90 shrink-0"
+          >
+            <RotateCcw className="h-3 w-3" />
+            <span>Desfazer</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setUndoToast(null)}
+            className="p-1 rounded text-slate-400 hover:text-white shrink-0"
+            aria-label="Fechar"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       <OfflineIndicator language={state.settings.language} />
     </div>

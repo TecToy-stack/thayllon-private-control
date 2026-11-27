@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { X, Plus } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { X, Plus, Mic, MicOff, Sparkles, Settings } from 'lucide-react';
 import {
   AppLanguage,
   BankAccount,
@@ -14,6 +14,37 @@ import {
   getTranslations,
   translatePaymentMethod,
 } from '../utils/i18n';
+import { parseVoiceTransaction, ParsedVoiceEntry } from '../utils/voiceEntryParser';
+import {
+  isAndroidNativeApp,
+  openNativeAppSettings,
+  requestAppPermission,
+} from '../utils/permissions';
+
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  0: SpeechRecognitionAlternativeLike;
+}
+
+interface SpeechRecognitionEventLike {
+  results: ArrayLike<SpeechRecognitionResultLike>;
+}
+
+interface SpeechRecognitionLike {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  continuous: boolean;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
 
 interface NewEntryModalProps {
   isOpen: boolean;
@@ -22,9 +53,16 @@ interface NewEntryModalProps {
   activeYear: number;
   defaultMonth: number;
   initialFlowType?: 'income' | 'expense';
+  autoStartVoice?: boolean;
   language: AppLanguage;
   onClose: () => void;
   onAddEntry: (entry: Omit<TransactionEntry, 'id' | 'createdAt'>) => void;
+}
+
+function getPaidStatusLabel(isIncome: boolean, language: AppLanguage): string {
+  if (language === 'en') return isIncome ? 'Received' : 'Paid';
+  if (language === 'es') return isIncome ? 'Recibido' : 'Pagado';
+  return isIncome ? 'Recebido' : 'Pago';
 }
 
 export const NewEntryModal: React.FC<NewEntryModalProps> = ({
@@ -34,6 +72,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   activeYear,
   defaultMonth,
   initialFlowType,
+  autoStartVoice = false,
   language,
   onClose,
   onAddEntry,
@@ -45,9 +84,10 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   const [month, setMonth] = useState(
     Math.min(11, Math.max(0, Number.isFinite(defaultMonth) ? Math.trunc(defaultMonth) : 10))
   );
-  const [day, setDay] = useState('23');
+  const [day, setDay] = useState(String(new Date().getDate()));
   const [amount, setAmount] = useState('');
   const [merchant, setMerchant] = useState('');
+  const [voiceDescription, setVoiceDescription] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('debit');
   const [entryNature, setEntryNature] = useState<EntryNature>('standard');
   const [installmentCurrent, setInstallmentCurrent] = useState('1');
@@ -55,12 +95,145 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? 'manual');
   const [status, setStatus] = useState<EntryStatus>('paid');
 
+  // Voice entry state
+  const [voiceText, setVoiceText] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceDeniedSettings, setVoiceDeniedSettings] = useState(false);
+  const [parsedPreview, setParsedPreview] = useState<ParsedVoiceEntry | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+
+  const selectedRow = rows.find((r) => r.id === rowId);
+  const isIncomeRow = selectedRow?.block === 'income';
+
+  const applyParsedVoice = (transcript: string) => {
+    const trimmed = transcript.trim();
+    if (!trimmed) return;
+    const parsed = parseVoiceTransaction(trimmed, rows, month);
+    setParsedPreview(parsed);
+    if (parsed.matchedRowId) setRowId(parsed.matchedRowId);
+    if (parsed.amount !== null) setAmount(parsed.amount.toFixed(2));
+    setDay(String(parsed.day));
+    setMonth(parsed.month);
+    setPaymentMethod(parsed.paymentMethod);
+    setStatus(parsed.status);
+    setMerchant(parsed.merchant);
+    setVoiceDescription(parsed.description);
+    if (parsed.installmentCurrent) setInstallmentCurrent(String(parsed.installmentCurrent));
+    if (parsed.installmentTotal) setInstallmentTotal(String(parsed.installmentTotal));
+  };
+
+  const stopListening = () => {
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // Ignore
+    }
+    recognitionRef.current = null;
+    setIsListening(false);
+  };
+
+  const startVoiceCapture = async () => {
+    setVoiceError(null);
+    setVoiceDeniedSettings(false);
+
+    if (isListening) {
+      stopListening();
+      return;
+    }
+
+    const perms = await requestAppPermission('microphone');
+    if (perms.microphone === 'denied') {
+      setVoiceDeniedSettings(isAndroidNativeApp());
+      setVoiceError(
+        isAndroidNativeApp()
+          ? 'Permissão de microfone negada no Android. Libere nos Ajustes do App ou digite a frase abaixo.'
+          : 'Permissão de microfone bloqueada no navegador. Você pode digitar ou colar a frase abaixo.'
+      );
+      return;
+    }
+
+    const win = window as unknown as {
+      SpeechRecognition?: new () => SpeechRecognitionLike;
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    };
+    const SpeechCtor = win.SpeechRecognition || win.webkitSpeechRecognition;
+
+    if (!SpeechCtor) {
+      setVoiceError(
+        'Reconhecimento de voz direto não disponível neste WebView. Use o teclado com ditado por voz do celular no campo abaixo e toque em Interpretar.'
+      );
+      return;
+    }
+
+    try {
+      const rec = new SpeechCtor();
+      rec.lang = language === 'en' ? 'en-US' : language === 'es' ? 'es-ES' : 'pt-BR';
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+      rec.continuous = false;
+
+      rec.onresult = (event) => {
+        let combined = '';
+        let hasFinal = false;
+        for (let i = 0; i < event.results.length; i++) {
+          const r = event.results[i];
+          if (r && r[0]?.transcript) {
+            combined += `${r[0].transcript} `;
+            if (r.isFinal) hasFinal = true;
+          }
+        }
+        const clean = combined.trim();
+        if (clean) {
+          setVoiceText(clean);
+          if (hasFinal) {
+            applyParsedVoice(clean);
+          }
+        }
+      };
+
+      rec.onerror = (ev) => {
+        setIsListening(false);
+        recognitionRef.current = null;
+        if (ev?.error === 'not-allowed' || ev?.error === 'service-not-allowed') {
+          setVoiceDeniedSettings(isAndroidNativeApp());
+          setVoiceError('Acesso ao microfone negado. Libere a permissão ou digite a frase abaixo.');
+        } else if (ev?.error !== 'aborted') {
+          setVoiceError(
+            'Não foi possível captar áudio agora. Você pode ditar pelo teclado ou digitar a frase abaixo.'
+          );
+        }
+      };
+
+      rec.onend = () => {
+        setIsListening(false);
+        recognitionRef.current = null;
+      };
+
+      recognitionRef.current = rec;
+      setIsListening(true);
+      rec.start();
+    } catch {
+      setIsListening(false);
+      setVoiceError('Digite ou dite pelo teclado no campo abaixo e toque em Interpretar.');
+    }
+  };
+
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      stopListening();
+      return;
+    }
     setMonth(Math.min(11, Math.max(0, Number.isFinite(defaultMonth) ? Math.trunc(defaultMonth) : 10)));
+    setDay(String(new Date().getDate()));
     setEntryNature('standard');
     setInstallmentCurrent('1');
     setInstallmentTotal('1');
+    setVoiceText('');
+    setVoiceDescription('');
+    setParsedPreview(null);
+    setVoiceError(null);
+    setVoiceDeniedSettings(false);
 
     if (initialFlowType === 'income') {
       const firstIncome = visibleRows.find((r) => r.block === 'income');
@@ -75,7 +248,11 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     if (accountId !== 'manual' && !accounts.some((a) => a.id === accountId)) {
       setAccountId(accounts[0]?.id ?? 'manual');
     }
-  }, [isOpen, defaultMonth, accounts, initialFlowType]);
+
+    if (autoStartVoice) {
+      void startVoiceCapture();
+    }
+  }, [isOpen, defaultMonth, accounts, initialFlowType, autoStartVoice]);
 
   if (!isOpen) return null;
 
@@ -84,7 +261,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     const parsed = parseFloat(amount.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0 || !rowId) return;
     const safeMonth = Math.min(11, Math.max(0, Number.isFinite(month) ? Math.trunc(month) : 0));
-    const selectedRow = rows.find((r) => r.id === rowId);
+    const currentRow = rows.find((r) => r.id === rowId);
     const instTot = Math.min(48, Math.max(1, parseInt(installmentTotal, 10) || 1));
     const instCur = Math.min(instTot, Math.max(1, parseInt(installmentCurrent, 10) || 1));
 
@@ -94,8 +271,11 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
       month: safeMonth,
       day: Math.min(31, Math.max(1, parseInt(day, 10) || 15)),
       amount: Number(parsed.toFixed(2)),
-      description: merchant.trim() || `${selectedRow?.name ?? t.modals.newEntryTitle} · ${monthNamesFull[safeMonth]}`,
-      merchant: merchant.trim() || selectedRow?.name || t.modals.newEntryTitle,
+      description:
+        voiceDescription.trim() ||
+        merchant.trim() ||
+        `${currentRow?.name ?? t.modals.newEntryTitle} · ${monthNamesFull[safeMonth]}`,
+      merchant: merchant.trim() || currentRow?.name || t.modals.newEntryTitle,
       paymentMethod,
       entryNature,
       installments: instTot > 1 ? `${instCur}/${instTot}` : undefined,
@@ -108,14 +288,17 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
 
     setAmount('');
     setMerchant('');
+    setVoiceDescription('');
+    setVoiceText('');
+    setParsedPreview(null);
     onClose();
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/60 backdrop-blur-xs" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-md rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
+      <div className="relative z-10 w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl">
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between sticky top-0 bg-white dark:bg-[#111827] z-10">
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
             {t.modals.newEntryTitle} ({activeYear})
           </h2>
@@ -129,6 +312,81 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {/* Smart Voice / Natural Phrase Entry */}
+          <div className="p-3.5 rounded-xl bg-blue-50/70 dark:bg-[#0D1320] border border-blue-200/80 dark:border-blue-500/25 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-blue-700 dark:text-blue-300">
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>Lançamento Rápido por Voz ou Frase</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void startVoiceCapture()}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+                  isListening
+                    ? 'bg-red-600 text-white animate-pulse'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              >
+                {isListening ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
+                <span>{isListening ? 'Parar' : 'Falar'}</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={voiceText}
+                onChange={(e) => setVoiceText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    applyParsedVoice(voiceText);
+                  }
+                }}
+                placeholder="Ex: abasteci a moto com 50 reais no débito no posto da GMC..."
+                className="flex-1 px-2.5 py-1.5 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+              />
+              <button
+                type="button"
+                disabled={!voiceText.trim()}
+                onClick={() => applyParsedVoice(voiceText)}
+                className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] disabled:opacity-40 whitespace-nowrap"
+              >
+                Preencher
+              </button>
+            </div>
+
+            {voiceError && (
+              <div className="text-[11px] text-amber-700 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2">
+                <span>{voiceError}</span>
+                {voiceDeniedSettings && (
+                  <button
+                    type="button"
+                    onClick={() => void openNativeAppSettings()}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-600 text-white font-semibold"
+                  >
+                    <Settings className="h-3 w-3" />
+                    <span>Ajustes do App</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {parsedPreview && parsedPreview.confidenceHints.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                {parsedPreview.confidenceHints.map((hint) => (
+                  <span
+                    key={hint}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-800 dark:text-blue-200 font-medium"
+                  >
+                    {hint}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
               {t.modals.categoryRowLabel}
@@ -270,7 +528,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                 onChange={(e) => setStatus(e.target.value as EntryStatus)}
                 className="w-full px-3 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
               >
-                <option value="paid">{t.modals.statusPaid}</option>
+                <option value="paid">{getPaidStatusLabel(isIncomeRow, language)}</option>
                 <option value="pending">{t.modals.statusPending}</option>
                 <option value="projected">{t.modals.statusProjected}</option>
               </select>

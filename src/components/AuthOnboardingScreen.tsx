@@ -570,6 +570,71 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
           {/* STAGE 1: CPF OR USERNAME+PASSWORD IDENTIFICATION */}
           {stage === 'cpf' && (
             <div className="p-6 sm:p-8 space-y-5">
+              {(rememberedCpf || credUsername || initialDraft?.fullName) && (
+                <div className="p-4 rounded-xl bg-blue-50/80 dark:bg-[#0D1320] border border-blue-200 dark:border-blue-500/30 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white text-xs font-bold shrink-0">
+                        {(initialDraft?.fullName || credUsername || 'OR')
+                          .trim()
+                          .slice(0, 2)
+                          .toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-blue-700 dark:text-blue-400">
+                          Conta lembrada neste aparelho
+                        </div>
+                        <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {initialDraft?.fullName ||
+                            (credUsername ? `@${credUsername}` : 'Titular cadastrado')}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                          {rememberedCpf && <span>{rememberedCpf.maskedCpf}</span>}
+                          {(credUsername || initialDraft?.username) && (
+                            <span className="text-blue-600 dark:text-blue-400">
+                              @{credUsername || initialDraft?.username}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleClearCpfInput(true);
+                        clearRememberedUsername();
+                        setCredUsername('');
+                      }}
+                      className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 shrink-0"
+                    >
+                      Trocar conta
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => {
+                      if (rememberedCpf) {
+                        setAuthMode('cpf');
+                        setCpfInput(rememberedCpf.formattedCpf);
+                        void runCpfLookup(rememberedCpf.cpfDigits);
+                      } else {
+                        setAuthMode('credentials');
+                      }
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors"
+                  >
+                    <UserCheck className="h-4 w-4" />
+                    <span>
+                      {rememberedCpf
+                        ? 'Acessar Cofre Agora (PIN / Biometria)'
+                        : 'Entrar com Usuário Lembrado'}
+                    </span>
+                  </button>
+                </div>
+              )}
+
               <div>
                 <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold">
                   {t.auth.stageCpfKicker}
