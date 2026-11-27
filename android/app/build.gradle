@@ -4,8 +4,21 @@ android {
     namespace = "com.thayllon.privatecontrol"
     compileSdk = rootProject.ext.compileSdkVersion
 
-    def resolvedVersionCode = (project.findProperty("ANDROID_VERSION_CODE") ?: System.getenv("ANDROID_VERSION_CODE") ?: "2").toInteger()
-    def resolvedVersionName = (project.findProperty("ANDROID_VERSION_NAME") ?: System.getenv("ANDROID_VERSION_NAME") ?: "1.1.0").toString()
+    def explicitVersionCode = (project.findProperty("ANDROID_VERSION_CODE") ?: System.getenv("ANDROID_VERSION_CODE") ?: "").toString().trim()
+    def explicitVersionName = (project.findProperty("ANDROID_VERSION_NAME") ?: System.getenv("ANDROID_VERSION_NAME") ?: "").toString().trim()
+    def ghRunNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "").toString().trim()
+    def ghRunAttempt = (System.getenv("GITHUB_RUN_ATTEMPT") ?: "1").toString().trim()
+
+    def baseVersionCode = 4
+    def resolvedVersionCode = baseVersionCode
+    if (explicitVersionCode.isInteger()) {
+        resolvedVersionCode = Math.max(baseVersionCode, explicitVersionCode.toInteger())
+    } else if (ghRunNumber.isInteger()) {
+        def attemptOffset = ghRunAttempt.isInteger() ? Math.max(0, ghRunAttempt.toInteger() - 1) : 0
+        resolvedVersionCode = 20 + (ghRunNumber.toInteger() * 10) + attemptOffset
+    }
+
+    def resolvedVersionName = explicitVersionName ? explicitVersionName : (ghRunNumber.isInteger() ? "1.3.${ghRunNumber}" : "1.3.0")
     def customDebugKeystorePath = (project.findProperty("ANDROID_DEBUG_KEYSTORE_PATH") ?: System.getenv("ANDROID_DEBUG_KEYSTORE_PATH") ?: "").toString()
     def customReleaseKeystorePath = (project.findProperty("ANDROID_KEYSTORE_PATH") ?: System.getenv("ANDROID_KEYSTORE_PATH") ?: "").toString()
 
