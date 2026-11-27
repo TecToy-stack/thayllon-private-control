@@ -6,6 +6,12 @@ import {
   BiometryErrorType,
   BiometryType,
 } from '@aparajita/capacitor-biometric-auth';
+import {
+  loadLocalMetaRecord,
+  safeLocalStorageGet,
+  safeLocalStorageSet,
+  saveLocalMetaRecord,
+} from './localVault';
 
 export type BiometricMode = 'capacitor_native' | 'webauthn' | 'device_key';
 
@@ -165,21 +171,18 @@ export async function checkNativeBiometryAvailability(): Promise<BiometryAvailab
 }
 
 export function saveLocalBiometricHandle(cpfId: string, credentialId: string, deviceKey: string): void {
-  try {
-    localStorage.setItem(
-      `${BIO_LOCAL_PREFIX}${cpfId}`,
-      JSON.stringify({ credentialId, deviceKey })
-    );
-  } catch {
-    // Ignore storage errors
-  }
+  const payload = { credentialId, deviceKey };
+  safeLocalStorageSet(`${BIO_LOCAL_PREFIX}${cpfId}`, JSON.stringify(payload), {
+    allowEvict: true,
+  });
+  void saveLocalMetaRecord(`${BIO_LOCAL_PREFIX}${cpfId}`, payload);
 }
 
 export function getLocalBiometricHandle(
   cpfId: string
 ): { credentialId: string; deviceKey: string } | null {
   try {
-    const raw = localStorage.getItem(`${BIO_LOCAL_PREFIX}${cpfId}`);
+    const raw = safeLocalStorageGet(`${BIO_LOCAL_PREFIX}${cpfId}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { credentialId?: string; deviceKey?: string };
     if (parsed?.credentialId && parsed?.deviceKey) {
@@ -189,6 +192,28 @@ export function getLocalBiometricHandle(
   } catch {
     return null;
   }
+}
+
+export async function rehydrateLocalBiometricHandleFromIdb(
+  cpfId: string
+): Promise<{ credentialId: string; deviceKey: string } | null> {
+  const existing = getLocalBiometricHandle(cpfId);
+  if (existing) {
+    void saveLocalMetaRecord(`${BIO_LOCAL_PREFIX}${cpfId}`, existing);
+    return existing;
+  }
+  const idbHandle = await loadLocalMetaRecord<{ credentialId?: string; deviceKey?: string }>(
+    `${BIO_LOCAL_PREFIX}${cpfId}`
+  );
+  if (idbHandle?.credentialId && idbHandle?.deviceKey) {
+    safeLocalStorageSet(
+      `${BIO_LOCAL_PREFIX}${cpfId}`,
+      JSON.stringify({ credentialId: idbHandle.credentialId, deviceKey: idbHandle.deviceKey }),
+      { allowEvict: true }
+    );
+    return { credentialId: idbHandle.credentialId, deviceKey: idbHandle.deviceKey };
+  }
+  return null;
 }
 
 async function promptNativeBiometric(subtitle: string): Promise<void> {

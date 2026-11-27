@@ -1,4 +1,4 @@
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor, PluginListenerHandle, registerPlugin } from '@capacitor/core';
 import { checkNativeBiometryAvailability } from './biometrics';
 
 export type AppPermissionStatus = 'granted' | 'prompt' | 'denied' | 'unsupported';
@@ -23,6 +23,14 @@ interface OrbePermissionsNativeResult {
   requiresSettings?: boolean;
 }
 
+export interface NativeSystemInsets {
+  statusBarHeight: number;
+  cutoutTop: number;
+  requiredTopInset: number;
+  nativePaddingTop: number;
+  uncoveredTopInset: number;
+}
+
 interface OrbePermissionsPlugin {
   checkStatus(): Promise<OrbePermissionsNativeResult>;
   requestPermissionType(options: {
@@ -34,6 +42,31 @@ interface OrbePermissionsPlugin {
     body: string;
     id?: number;
   }): Promise<{ shown: boolean; reason?: string }>;
+  getSystemInsets(): Promise<NativeSystemInsets>;
+  saveNativeVaultMirror(options: {
+    key: string;
+    payload: string;
+  }): Promise<{ saved: boolean }>;
+  loadNativeVaultMirror(options: {
+    key: string;
+  }): Promise<{ payload: string | null }>;
+  isNativeSpeechAvailable(): Promise<{ available: boolean }>;
+  startNativeSpeech(options: {
+    lang?: string;
+  }): Promise<{ started: boolean; reason?: string }>;
+  stopNativeSpeech(): Promise<{ stopped: boolean }>;
+  addListener(
+    eventName: 'voicePartial' | 'voiceFinal',
+    listenerFunc: (event: { text: string }) => void
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'voiceState',
+    listenerFunc: (event: { listening: boolean }) => void
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: 'voiceError',
+    listenerFunc: (event: { code?: string; message?: string }) => void
+  ): Promise<PluginListenerHandle>;
 }
 
 const OrbePermissionsNative = registerPlugin<OrbePermissionsPlugin>('OrbePermissions');
@@ -240,6 +273,35 @@ function markNotifiedToday(tagKey: string): void {
   }
 }
 
+export async function getNativeSystemInsets(): Promise<NativeSystemInsets | null> {
+  if (!isAndroidNativeApp()) return null;
+  try {
+    return await OrbePermissionsNative.getSystemInsets();
+  } catch {
+    return null;
+  }
+}
+
+export async function saveNativeVaultMirror(key: string, payload: string): Promise<boolean> {
+  if (!isAndroidNativeApp()) return false;
+  try {
+    const res = await OrbePermissionsNative.saveNativeVaultMirror({ key, payload });
+    return Boolean(res?.saved);
+  } catch {
+    return false;
+  }
+}
+
+export async function loadNativeVaultMirror(key: string): Promise<string | null> {
+  if (!isAndroidNativeApp()) return null;
+  try {
+    const res = await OrbePermissionsNative.loadNativeVaultMirror({ key });
+    return typeof res?.payload === 'string' && res.payload.length > 0 ? res.payload : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function sendCashflowAlertNotification(
   title: string,
   body: string,
@@ -282,3 +344,91 @@ export async function sendCashflowAlertNotification(
 
   return false;
 }
+
+export async function isNativeSpeechRecognitionAvailable(): Promise<boolean> {
+  if (!isAndroidNativeApp()) return false;
+  try {
+    const res = await OrbePermissionsNative.isNativeSpeechAvailable();
+    return Boolean(res?.available);
+  } catch {
+    return false;
+  }
+}
+
+export async function startNativeSpeechRecognition(
+  lang: string = 'pt-BR'
+): Promise<{ started: boolean; reason?: string }> {
+  if (!isAndroidNativeApp()) {
+    return { started: false, reason: 'not_android_native' };
+  }
+  try {
+    return await OrbePermissionsNative.startNativeSpeech({ lang });
+  } catch {
+    return { started: false, reason: 'plugin_error' };
+  }
+}
+
+export async function stopNativeSpeechRecognition(): Promise<void> {
+  if (!isAndroidNativeApp()) return;
+  try {
+    await OrbePermissionsNative.stopNativeSpeech();
+  } catch {
+    // Ignore stop errors
+  }
+}
+
+export async function subscribeNativeSpeechEvents(handlers: {
+  onPartial?: (text: string) => void;
+  onFinal?: (text: string) => void;
+  onState?: (listening: boolean) => void;
+  onError?: (code: string, message: string) => void;
+}): Promise<() => void> {
+  if (!isAndroidNativeApp()) {
+    return () => undefined;
+  }
+
+  const handles: PluginListenerHandle[] = [];
+  try {
+    if (handlers.onPartial) {
+      handles.push(
+        await OrbePermissionsNative.addListener('voicePartial', (ev) => {
+          if (ev?.text) handlers.onPartial?.(ev.text);
+        })
+      );
+    }
+    if (handlers.onFinal) {
+      handles.push(
+        await OrbePermissionsNative.addListener('voiceFinal', (ev) => {
+          if (ev?.text) handlers.onFinal?.(ev.text);
+        })
+      );
+    }
+    if (handlers.onState) {
+      handles.push(
+        await OrbePermissionsNative.addListener('voiceState', (ev) => {
+          handlers.onState?.(Boolean(ev?.listening));
+        })
+      );
+    }
+    if (handlers.onError) {
+      handles.push(
+        await OrbePermissionsNative.addListener('voiceError', (ev) => {
+          handlers.onError?.(ev?.code || 'unknown', ev?.message || 'Erro de voz');
+        })
+      );
+    }
+  } catch {
+    // Ignore listener attachment errors
+  }
+
+  return () => {
+    handles.forEach((h) => {
+      try {
+        void h.remove();
+      } catch {
+        // Ignore cleanup
+      }
+    });
+  };
+}
+

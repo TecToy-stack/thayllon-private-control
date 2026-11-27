@@ -18,6 +18,8 @@ import {
   Trash2,
   KeyRound,
   UserCheck,
+  Upload,
+  RotateCcw,
 } from 'lucide-react';
 import {
   AppLanguage,
@@ -52,8 +54,18 @@ import {
   saveLastCpfPrivacyMask,
   saveRememberedCpf,
   saveRememberedUsername,
+  SavedCadastralDraft,
 } from '../utils/localVault';
-import { lookupCpfVault, loginCpfVault, registerCpfVault } from '../utils/vaultApi';
+import {
+  lookupCpfVault,
+  lookupVaultByCpfId,
+  loginCpfVault,
+  registerCpfVault,
+  rehydrateResilientLocalAccount,
+  ResilientAccountSummary,
+  restoreVaultFromBackupOnLogin,
+} from '../utils/vaultApi';
+import { RecoverableDeviceBackupInfo } from '../utils/backup';
 
 export interface AuthenticatedSessionPayload {
   token: string;
@@ -73,7 +85,7 @@ interface LookupResult {
   hasPasswordLogin?: boolean;
   kycStatus?: KycStatus;
   biometric?: BiometricConfig;
-  source?: 'server' | 'offline';
+  source?: 'server' | 'offline' | 'local';
 }
 
 interface AuthOnboardingScreenProps {
@@ -102,6 +114,18 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
   const [bioAvailability, setBioAvailability] = useState<BiometryAvailabilityInfo | null>(null);
   const cpfInputRef = useRef<HTMLInputElement>(null);
 
+  // Resilient Recovery State (auto-discovered backup or manual 1-click .json import)
+  const [recoverableBackup, setRecoverableBackup] = useState<RecoverableDeviceBackupInfo | null>(null);
+  const [recoveredAccount, setRecoveredAccount] = useState<ResilientAccountSummary | null>(null);
+  const [allLocalAccounts, setAllLocalAccounts] = useState<ResilientAccountSummary[]>([]);
+  const [mirrorRecoveredNotice, setMirrorRecoveredNotice] = useState(false);
+  const [showJsonRestorePanel, setShowJsonRestorePanel] = useState(false);
+  const [restoreJsonText, setRestoreJsonText] = useState<string | null>(null);
+  const [restoreFileName, setRestoreFileName] = useState<string>('');
+  const [restoreCpfInput, setRestoreCpfInput] = useState(() => loadRememberedCpf()?.formattedCpf ?? '');
+  const [restorePinInput, setRestorePinInput] = useState('');
+  const restoreFileInputRef = useRef<HTMLInputElement>(null);
+
   // Credentials Login State (Stage 1 & Stage 2)
   const [credUsername, setCredUsername] = useState(() => loadRememberedUsername());
   const [credPassword, setCredPassword] = useState('');
@@ -112,6 +136,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
 
   // Register 3-step Wizard State (pre-filled from saved cadastral draft if present)
   const initialDraft = loadCadastralDraft();
+  const [draftProfile, setDraftProfile] = useState<SavedCadastralDraft | null>(initialDraft);
   const [hasPrefilledDraft, setHasPrefilledDraft] = useState(() => Boolean(initialDraft?.fullName));
   const [regStep, setRegStep] = useState<1 | 2 | 3>(1);
   const [fullName, setFullName] = useState(() => initialDraft?.fullName ?? '');
@@ -135,6 +160,41 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
       .catch(() => {
         if (active) setBioAvailability(null);
       });
+
+    rehydrateResilientLocalAccount()
+      .then((scan) => {
+        if (!active) return;
+        const refreshedCpf = loadRememberedCpf();
+        const refreshedDraft = loadCadastralDraft();
+        const refreshedUser = loadRememberedUsername();
+        if (refreshedCpf) {
+          setRememberedCpf(refreshedCpf);
+          setCpfInput((prev) => prev || refreshedCpf.formattedCpf);
+          setRestoreCpfInput((prev) => prev || refreshedCpf.formattedCpf);
+        }
+        if (refreshedDraft) {
+          setDraftProfile(refreshedDraft);
+        }
+        if (refreshedUser) {
+          setCredUsername((prev) => prev || refreshedUser);
+        }
+        if (scan.existingAccount) {
+          setRecoveredAccount(scan.existingAccount);
+        }
+        if (scan.allAccounts.length > 0) {
+          setAllLocalAccounts(scan.allAccounts);
+        }
+        if (scan.recoveredFromMirror) {
+          setMirrorRecoveredNotice(true);
+        }
+        if (!scan.existingAccount && scan.recoverableBackup) {
+          setRecoverableBackup(scan.recoverableBackup);
+        }
+      })
+      .catch(() => {
+        // Resilient scan stays silent on error
+      });
+
     return () => {
       active = false;
       if (kycTimerRef.current !== null) {
@@ -179,18 +239,8 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
         setLoginPin('');
         setLoginPassword('');
         setLoginMethod('pin');
-        if (data.source === 'offline') {
-          setInfoNotice(
-            'Servidor indisponível no momento. Conta localizada no cache seguro deste aparelho.'
-          );
-        }
         setStage('login');
       } else {
-        if (data.source === 'offline') {
-          setInfoNotice(
-            'Servidor de sincronização inacessível agora. Se você já tinha conta em outro aparelho ou antes de reinstalar, conecte-se à internet ou importe seu backup JSON em Configurações.'
-          );
-        }
         const draft = loadCadastralDraft();
         if (draft) {
           setFullName((prev) => prev || draft.fullName);
@@ -207,14 +257,36 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
         setStage('register');
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Erro ao conectar ao servidor.');
+      setError(err instanceof Error ? err.message : 'Não foi possível verificar os dados informados.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runCpfIdLookup = async (cpfIdToLookup: string) => {
+    setError(null);
+    setInfoNotice(null);
+    setLoading(true);
+    try {
+      const data = await lookupVaultByCpfId(cpfIdToLookup);
+      if (!data.exists) {
+        setError('Conta não encontrada neste aparelho. Informe seu CPF ou crie um novo cofre.');
+        return;
+      }
+      setLookup(data as LookupResult);
+      setLoginPin('');
+      setLoginPassword('');
+      setLoginMethod('pin');
+      setStage('login');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Não foi possível abrir o cofre salvo.');
     } finally {
       setLoading(false);
     }
   };
 
   const persistSessionProfileCadastral = (profile: UserProfile) => {
-    saveCadastralDraft({
+    const savedDraft = saveCadastralDraft({
       fullName: profile.fullName,
       birthDate: profile.birthDate,
       email: profile.email,
@@ -223,8 +295,58 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
       kycDocumentType: profile.kycDocumentType,
       kycDocumentLast4: profile.kycDocumentLast4,
     });
+    if (savedDraft) setDraftProfile(savedDraft);
     if (profile.username && rememberUsername) {
       saveRememberedUsername(profile.username);
+    }
+  };
+
+  const handleRestoreJsonFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError(null);
+    try {
+      const text = await file.text();
+      setRestoreJsonText(text);
+      setRestoreFileName(file.name);
+      setShowJsonRestorePanel(true);
+    } catch {
+      setError('Não foi possível ler o arquivo .json selecionado.');
+    }
+  };
+
+  const handleExecuteBackupRestore = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const payloadJson = restoreJsonText || recoverableBackup?.payloadJson;
+    if (!payloadJson) {
+      setError('Selecione um arquivo de backup .json válido.');
+      return;
+    }
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await restoreVaultFromBackupOnLogin({
+        jsonText: payloadJson,
+        cpf: restoreCpfInput,
+        pin: restorePinInput,
+        fullName: recoverableBackup?.fullName,
+      });
+      const saved = saveRememberedCpf(restoreCpfInput);
+      if (saved) setRememberedCpf(saved);
+      persistSessionProfileCadastral(res.profile);
+      onAuthenticated({
+        token: res.token,
+        cpfId: res.profile.cpfId,
+        profile: res.profile,
+        biometric: res.biometric,
+        appState: res.appState,
+        restoredFromServer: false,
+      });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Falha ao restaurar backup JSON.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -309,12 +431,15 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
       setLoading(true);
       try {
         const data = await loginCpfVault({
-          cpf: cpfDigits,
+          cpf: isValidCPF(cpfDigits) ? cpfDigits : undefined,
+          cpfId: lookup.cpfId,
           method: 'password',
           password: loginPassword,
         });
-        const saved = saveRememberedCpf(cpfDigits);
-        if (saved) setRememberedCpf(saved);
+        const refreshedSaved = isValidCPF(cpfDigits)
+          ? saveRememberedCpf(cpfDigits)
+          : loadRememberedCpf();
+        if (refreshedSaved) setRememberedCpf(refreshedSaved);
         persistSessionProfileCadastral(data.profile);
         onAuthenticated({
           token: data.token,
@@ -340,13 +465,16 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
     setLoading(true);
     try {
       const data = await loginCpfVault({
-        cpf: cpfDigits,
+        cpf: isValidCPF(cpfDigits) ? cpfDigits : undefined,
+        cpfId: lookup.cpfId,
         method: 'pin',
         pin: loginPin.trim(),
       });
 
-      const saved = saveRememberedCpf(cpfDigits);
-      if (saved) setRememberedCpf(saved);
+      const refreshedSaved = isValidCPF(cpfDigits)
+        ? saveRememberedCpf(cpfDigits)
+        : loadRememberedCpf();
+      if (refreshedSaved) setRememberedCpf(refreshedSaved);
       persistSessionProfileCadastral(data.profile);
       onAuthenticated({
         token: data.token,
@@ -373,21 +501,24 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
       const proof = await verifyBiometricOnDevice(lookup.cpfId, lookup.biometric?.credentialId);
       if (!proof) {
         setError(
-          'Credencial biométrica não encontrada neste dispositivo (ex.: após reinstalação). Entre com seu PIN para restaurar sua conta e reativar a biometria.'
+          'Credencial biométrica não encontrada neste dispositivo. Entre com seu PIN para reativar a biometria.'
         );
         setLoading(false);
         return;
       }
 
       const data = await loginCpfVault({
-        cpf: cpfDigits,
+        cpf: isValidCPF(cpfDigits) ? cpfDigits : undefined,
+        cpfId: lookup.cpfId,
         method: 'biometric',
         credentialId: proof.credentialId,
         deviceKey: proof.deviceKey,
       });
 
-      const saved = saveRememberedCpf(cpfDigits);
-      if (saved) setRememberedCpf(saved);
+      const refreshedSaved = isValidCPF(cpfDigits)
+        ? saveRememberedCpf(cpfDigits)
+        : loadRememberedCpf();
+      if (refreshedSaved) setRememberedCpf(refreshedSaved);
       persistSessionProfileCadastral(data.profile);
       onAuthenticated({
         token: data.token,
@@ -570,12 +701,17 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
           {/* STAGE 1: CPF OR USERNAME+PASSWORD IDENTIFICATION */}
           {stage === 'cpf' && (
             <div className="p-6 sm:p-8 space-y-5">
-              {(rememberedCpf || credUsername || initialDraft?.fullName) && (
+              {(rememberedCpf || credUsername || draftProfile?.fullName || recoveredAccount) && (
                 <div className="p-4 rounded-xl bg-blue-50/80 dark:bg-[#0D1320] border border-blue-200 dark:border-blue-500/30 space-y-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white text-xs font-bold shrink-0">
-                        {(initialDraft?.fullName || credUsername || 'OR')
+                        {(
+                          recoveredAccount?.fullName ||
+                          draftProfile?.fullName ||
+                          credUsername ||
+                          'OR'
+                        )
                           .trim()
                           .slice(0, 2)
                           .toUpperCase()}
@@ -585,14 +721,17 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                           Conta lembrada neste aparelho
                         </div>
                         <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                          {initialDraft?.fullName ||
+                          {recoveredAccount?.fullName ||
+                            draftProfile?.fullName ||
                             (credUsername ? `@${credUsername}` : 'Titular cadastrado')}
                         </div>
                         <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                          {rememberedCpf && <span>{rememberedCpf.maskedCpf}</span>}
-                          {(credUsername || initialDraft?.username) && (
+                          {(rememberedCpf?.maskedCpf || recoveredAccount?.maskedCpf) && (
+                            <span>{rememberedCpf?.maskedCpf || recoveredAccount?.maskedCpf}</span>
+                          )}
+                          {(credUsername || recoveredAccount?.username || draftProfile?.username) && (
                             <span className="text-blue-600 dark:text-blue-400">
-                              @{credUsername || initialDraft?.username}
+                              @{credUsername || recoveredAccount?.username || draftProfile?.username}
                             </span>
                           )}
                         </div>
@@ -604,12 +743,20 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                         handleClearCpfInput(true);
                         clearRememberedUsername();
                         setCredUsername('');
+                        setDraftProfile(null);
+                        setRecoveredAccount(null);
                       }}
                       className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 shrink-0"
                     >
                       Trocar conta
                     </button>
                   </div>
+
+                  {mirrorRecoveredNotice && (
+                    <div className="text-[11px] text-emerald-700 dark:text-emerald-300 font-medium">
+                      Conta e dados locais preservados e recuperados automaticamente neste aparelho.
+                    </div>
+                  )}
 
                   <button
                     type="button"
@@ -619,6 +766,9 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                         setAuthMode('cpf');
                         setCpfInput(rememberedCpf.formattedCpf);
                         void runCpfLookup(rememberedCpf.cpfDigits);
+                      } else if (recoveredAccount?.cpfId) {
+                        setAuthMode('cpf');
+                        void runCpfIdLookup(recoveredAccount.cpfId);
                       } else {
                         setAuthMode('credentials');
                       }
@@ -627,11 +777,70 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                   >
                     <UserCheck className="h-4 w-4" />
                     <span>
-                      {rememberedCpf
+                      {rememberedCpf || recoveredAccount?.cpfId
                         ? 'Acessar Cofre Agora (PIN / Biometria)'
                         : 'Entrar com Usuário Lembrado'}
                     </span>
                   </button>
+
+                  {allLocalAccounts.length > 1 && (
+                    <div className="pt-2 border-t border-blue-200/70 dark:border-white/[0.08] space-y-1.5">
+                      <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+                        Outras contas salvas neste dispositivo
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {allLocalAccounts.slice(0, 4).map((acc) => (
+                          <button
+                            key={acc.cpfId}
+                            type="button"
+                            disabled={loading}
+                            onClick={() => {
+                              if (acc.cpfDigits) {
+                                setCpfInput(formatCPF(acc.cpfDigits));
+                                void runCpfLookup(acc.cpfDigits);
+                              } else {
+                                void runCpfIdLookup(acc.cpfId);
+                              }
+                            }}
+                            className="px-2.5 py-1 rounded-lg text-[11px] bg-white dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-200 hover:border-blue-400"
+                          >
+                            {acc.fullName.split(' ')[0]} · {acc.maskedCpf}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {recoverableBackup && !rememberedCpf && (
+                <div className="p-4 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-500/35 space-y-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <RotateCcw className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                          Backup local detectado neste dispositivo
+                        </div>
+                        <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                          {recoverableBackup.fullName}
+                          {recoverableBackup.maskedCpf ? ` · ${recoverableBackup.maskedCpf}` : ''} ·{' '}
+                          {new Date(recoverableBackup.savedAt).toLocaleDateString('pt-BR')}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRestoreJsonText(recoverableBackup.payloadJson);
+                        setRestoreFileName('Backup Automático Local');
+                        setShowJsonRestorePanel(true);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-600 text-white hover:bg-emerald-700 shrink-0"
+                    >
+                      Restaurar em 1 clique
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -876,6 +1085,103 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
                   </button>
                 </form>
               )}
+
+              {/* 1-Click Local Backup / .json Recovery */}
+              <div className="pt-3 border-t border-slate-200/80 dark:border-white/[0.08] space-y-3">
+                <input
+                  ref={restoreFileInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={handleRestoreJsonFilePick}
+                  className="hidden"
+                />
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowJsonRestorePanel((prev) => !prev)}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    <span>
+                      {showJsonRestorePanel
+                        ? 'Ocultar restauração de backup (.json)'
+                        : 'Restaurar backup anterior (.json) sem criar nova conta'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => restoreFileInputRef.current?.click()}
+                    className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    Selecionar .json
+                  </button>
+                </div>
+
+                {showJsonRestorePanel && (
+                  <form
+                    onSubmit={handleExecuteBackupRestore}
+                    className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] space-y-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-900 dark:text-white">
+                        Restauração rápida de backup
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => restoreFileInputRef.current?.click()}
+                        className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-700 dark:text-slate-200"
+                      >
+                        {restoreFileName ? `Arquivo: ${restoreFileName}` : 'Escolher arquivo .json'}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                          CPF do titular
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={14}
+                          value={restoreCpfInput}
+                          onChange={(e) => setRestoreCpfInput(formatCPF(e.target.value))}
+                          placeholder="000.000.000-00"
+                          className="w-full px-3 py-2 rounded-lg text-xs font-mono bg-white dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                          PIN do cofre (4–6 dígitos)
+                        </label>
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={6}
+                          value={restorePinInput}
+                          onChange={(e) => setRestorePinInput(e.target.value.replace(/\D/g, ''))}
+                          placeholder="••••"
+                          className="w-full px-3 py-2 rounded-lg text-xs font-mono tracking-widest bg-white dark:bg-[#090D16] border border-slate-300 dark:border-white/[0.12] text-slate-900 dark:text-white"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={
+                        loading ||
+                        (!restoreJsonText && !recoverableBackup?.payloadJson) ||
+                        !isValidCPF(cleanCPF(restoreCpfInput)) ||
+                        restorePinInput.length < 4
+                      }
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>Restaurar Dados e Acessar Agora</span>
+                    </button>
+                  </form>
+                )}
+              </div>
             </div>
           )}
 
@@ -885,9 +1191,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold">
-                    {lookup.source === 'offline'
-                      ? t.modals.offlineBanner
-                      : t.auth.stageCpfKicker}
+                    {t.auth.stageCpfKicker}
                   </div>
                   <h2 className="mt-1 text-lg font-semibold text-slate-900 dark:text-white">
                     {lookup.fullNameHint}

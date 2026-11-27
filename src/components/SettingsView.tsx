@@ -2219,17 +2219,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </strong>
                 </div>
                 <div className="p-2.5 rounded-lg bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-white/[0.06]">
-                  <span className="text-slate-500 dark:text-slate-400 block">Sincronização Cofre</span>
+                  <span className="text-slate-500 dark:text-slate-400 block">Armazenamento Cofre</span>
                   <strong className="font-mono text-slate-900 dark:text-slate-100">
-                    {autoBackupStatus?.syncedToServer
-                      ? 'IndexedDB + Servidor'
-                      : 'IndexedDB Local (Offline-Safe)'}
+                    100% Local (IndexedDB + Dispositivo)
                   </strong>
                 </div>
               </div>
 
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                No Android/WebView, os snapshots automáticos ficam salvos com segurança no armazenamento interno (IndexedDB + servidor autenticado, sem senhas/PINs). Para gravar na pasta pública Downloads do celular sem permissões extras, utilize o botão de exportação ou compartilhamento abaixo.
+                Os snapshots automáticos ficam salvos com segurança no armazenamento interno deste dispositivo (IndexedDB + localStorage, sem senhas/PINs). Para salvar uma cópia externa na pasta Downloads ou trocar de celular, utilize os botões voluntários de exportação abaixo.
               </p>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -2240,7 +2238,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     await reloadSnapshots();
                     setSecFeedback({
                       type: 'ok',
-                      text: 'Snapshot de backup atualizado no cofre local e servidor (quando conectado).',
+                      text: 'Snapshot de backup atualizado com segurança no cofre local deste aparelho.',
                     });
                   }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16]"

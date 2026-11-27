@@ -1,4 +1,9 @@
 import { AppState, UserProfile } from '../types/finance';
+import {
+  safeLocalStorageGet,
+  safeLocalStorageKeys,
+  safeLocalStorageSet,
+} from './localVault';
 
 export interface BackupMeta {
   lastBackupAt: string | null;
@@ -115,7 +120,7 @@ async function readAutoBackupRecord(cpfId: string): Promise<StoredAutoBackupReco
     }
   }
   try {
-    const raw = localStorage.getItem(`${AUTO_BACKUP_LS_PREFIX}${cpfId}`);
+    const raw = safeLocalStorageGet(`${AUTO_BACKUP_LS_PREFIX}${cpfId}`);
     if (!raw) return null;
     return JSON.parse(raw) as StoredAutoBackupRecord;
   } catch {
@@ -125,7 +130,9 @@ async function readAutoBackupRecord(cpfId: string): Promise<StoredAutoBackupReco
 
 async function writeAutoBackupRecord(record: StoredAutoBackupRecord): Promise<void> {
   try {
-    localStorage.setItem(`${AUTO_BACKUP_LS_PREFIX}${record.cpfId}`, JSON.stringify(record));
+    safeLocalStorageSet(`${AUTO_BACKUP_LS_PREFIX}${record.cpfId}`, JSON.stringify(record), {
+      allowEvict: true,
+    });
   } catch {
     // Ignore quota limits in localStorage
   }
@@ -147,7 +154,7 @@ async function writeAutoBackupRecord(record: StoredAutoBackupRecord): Promise<vo
 
 export function loadBackupMeta(cpfId: string): BackupMeta {
   try {
-    const raw = localStorage.getItem(`${BACKUP_META_PREFIX}${cpfId}`);
+    const raw = safeLocalStorageGet(`${BACKUP_META_PREFIX}${cpfId}`);
     if (!raw) return { lastBackupAt: null, dirty: false };
     const parsed = JSON.parse(raw) as Partial<BackupMeta>;
     return {
@@ -161,7 +168,9 @@ export function loadBackupMeta(cpfId: string): BackupMeta {
 
 export function saveBackupMeta(cpfId: string, meta: BackupMeta): void {
   try {
-    localStorage.setItem(`${BACKUP_META_PREFIX}${cpfId}`, JSON.stringify(meta));
+    safeLocalStorageSet(`${BACKUP_META_PREFIX}${cpfId}`, JSON.stringify(meta), {
+      allowEvict: true,
+    });
   } catch {
     // Ignore storage quota / restricted environment errors
   }
@@ -427,4 +436,71 @@ export function parseBackupSnapshotState(payloadJson: string): Partial<AppState>
   } catch {
     return null;
   }
+}
+
+export interface RecoverableDeviceBackupInfo {
+  cpfId: string;
+  savedAt: string;
+  fullName: string;
+  maskedCpf: string;
+  payloadJson: string;
+  source: 'idb_autobackup' | 'ls_autobackup';
+}
+
+export async function findLatestLocalBackupAcrossDevice(): Promise<RecoverableDeviceBackupInfo | null> {
+  const candidates: RecoverableDeviceBackupInfo[] = [];
+
+  const db = await openBackupDB();
+  if (db) {
+    try {
+      const records = await new Promise<StoredAutoBackupRecord[]>((resolve) => {
+        const tx = db.transaction(BACKUP_STORE, 'readonly');
+        const store = tx.objectStore(BACKUP_STORE);
+        const req = store.getAll();
+        req.onsuccess = () => resolve(Array.isArray(req.result) ? (req.result as StoredAutoBackupRecord[]) : []);
+        req.onerror = () => resolve([]);
+      });
+      for (const rec of records) {
+        const latest = rec?.snapshots?.[0];
+        if (latest?.payloadJson) {
+          candidates.push({
+            cpfId: rec.cpfId,
+            savedAt: latest.savedAt,
+            fullName: latest.owner?.fullName || 'Titular ORBE',
+            maskedCpf: latest.owner?.maskedCpf || '',
+            payloadJson: latest.payloadJson,
+            source: 'idb_autobackup',
+          });
+        }
+      }
+    } catch {
+      // Ignore IDB scan failures
+    }
+  }
+
+  for (const key of safeLocalStorageKeys()) {
+    if (!key.startsWith(AUTO_BACKUP_LS_PREFIX)) continue;
+    try {
+      const raw = safeLocalStorageGet(key);
+      if (!raw) continue;
+      const rec = JSON.parse(raw) as StoredAutoBackupRecord;
+      const latest = rec?.snapshots?.[0];
+      if (latest?.payloadJson) {
+        candidates.push({
+          cpfId: rec.cpfId || key.slice(AUTO_BACKUP_LS_PREFIX.length),
+          savedAt: latest.savedAt,
+          fullName: latest.owner?.fullName || 'Titular ORBE',
+          maskedCpf: latest.owner?.maskedCpf || '',
+          payloadJson: latest.payloadJson,
+          source: 'ls_autobackup',
+        });
+      }
+    } catch {
+      // Ignore malformed entry
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+  return candidates[0] ?? null;
 }
