@@ -150,12 +150,12 @@ export const AssistantChatView: React.FC<AssistantChatViewProps> = ({
   }, [state.rows, totals]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start pb-20 lg:pb-6">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start pb-2 lg:pb-6">
       {/* Main Chat Container */}
-      <div className="lg:col-span-8 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] flex flex-col h-[calc(100vh-190px)] min-h-[540px]">
+      <div className="lg:col-span-8 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] flex flex-col h-[calc(100dvh-13.5rem)] min-h-[400px] max-h-[760px] lg:h-[calc(100dvh-190px)] lg:min-h-[540px]">
         {/* Persona Switcher Header */}
-        <div className="px-5 py-3.5 border-b border-slate-200 dark:border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
+        <div className="px-4 sm:px-5 py-3.5 border-b border-slate-200 dark:border-white/[0.08] flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06] max-w-full">
             <button
               type="button"
               onClick={() => setPersona('integrated')}

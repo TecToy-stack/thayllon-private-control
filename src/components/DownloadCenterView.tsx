@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  ExternalLink,
   FileDown,
   FileSpreadsheet,
   FileText,
@@ -11,7 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { AppLanguage, AppState, MatrixTotals } from '../types/finance';
-import { formatBRL } from '../utils/financeEngine';
+import { computeMatrixTotals, formatBRL } from '../utils/financeEngine';
 import { getMonthNamesFull } from '../utils/i18n';
 import {
   computePdfReportPreviewStats,
@@ -63,8 +64,23 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
   const [pdfScope, setPdfScope] = useState<PdfReportScope>('consolidated');
   const [pdfPeriod, setPdfPeriod] = useState<PdfReportPeriod>('month');
   const [pdfMonth, setPdfMonth] = useState<number>(defaultFocusMonth);
+  const [pdfYear, setPdfYear] = useState<number>(activeYear);
   const [pdfStatus, setPdfStatus] = useState<PdfReportStatusFilter>('all');
   const [pdfFeedback, setPdfFeedback] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
+  const isEmbeddedIframe = useMemo(
+    () => typeof window !== 'undefined' && window.self !== window.top,
+    []
+  );
+
+  const pdfTotals = useMemo(
+    () =>
+      pdfYear === activeYear
+        ? totals
+        : computeMatrixTotals(state.rows, state.entries, pdfYear),
+    [pdfYear, activeYear, totals, state.rows, state.entries]
+  );
 
   const showStatusFilter =
     pdfScope === 'consolidated' ||
@@ -76,27 +92,37 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
     () =>
       computePdfReportPreviewStats({
         state,
-        totals,
+        totals: pdfTotals,
         scope: pdfScope,
         period: pdfPeriod,
         focusMonth: pdfMonth,
+        targetYear: pdfYear,
         statusFilter: showStatusFilter ? pdfStatus : 'all',
         language,
       }),
-    [state, totals, pdfScope, pdfPeriod, pdfMonth, pdfStatus, showStatusFilter, language]
+    [state, pdfTotals, pdfScope, pdfPeriod, pdfMonth, pdfYear, pdfStatus, showStatusFilter, language]
   );
 
   // ==================== HANDLERS ====================
   const handleDownloadTemplate = (format: 'csv' | 'xlsx') => {
     setCsvFormatError(null);
-    const filename = downloadImportTemplate(format, rows, activeYear);
-    setCsvFeedback(
-      isEn
-        ? `Standard ${format.toUpperCase()} template downloaded: ${filename}`
-        : isEs
-        ? `Plantilla ${format.toUpperCase()} estándar descargada: ${filename}`
-        : `Modelo ${format.toUpperCase()} padrão baixado: ${filename}`
-    );
+    setCsvFeedback(null);
+    try {
+      const { filename, inIframe } = downloadImportTemplate(format, rows, activeYear);
+      setCsvFeedback(
+        isEn
+          ? `Standard ${format.toUpperCase()} template prepared: ${filename}${inIframe ? ' (if blocked by preview iframe, open the app in a new tab).' : ''}`
+          : isEs
+          ? `Plantilla ${format.toUpperCase()} estándar preparada: ${filename}`
+          : `Modelo ${format.toUpperCase()} preparado: ${filename}.${inIframe ? ' Se o navegador incorporado bloquear downloads, abra em nova aba abaixo.' : ''}`
+      );
+    } catch (err) {
+      setCsvFormatError(
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível gerar a planilha modelo.'
+      );
+    }
   };
 
   const handleSelectSpreadsheetFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -156,22 +182,32 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
 
   const handleExportPdf = () => {
     setPdfFeedback(null);
-    const { filename } = exportCustomPDFReport({
-      state,
-      totals,
-      scope: pdfScope,
-      period: pdfPeriod,
-      focusMonth: pdfMonth,
-      statusFilter: showStatusFilter ? pdfStatus : 'all',
-      language,
-    });
-    setPdfFeedback(
-      isEn
-        ? `PDF report exported: ${filename}`
-        : isEs
-        ? `Informe PDF exportado: ${filename}`
-        : `Relatório PDF gerado e baixado: ${filename}`
-    );
+    setPdfError(null);
+    try {
+      const { filename, inIframe } = exportCustomPDFReport({
+        state,
+        totals: pdfTotals,
+        scope: pdfScope,
+        period: pdfPeriod,
+        focusMonth: pdfMonth,
+        targetYear: pdfYear,
+        statusFilter: showStatusFilter ? pdfStatus : 'all',
+        language,
+      });
+      setPdfFeedback(
+        isEn
+          ? `PDF report generated: ${filename}`
+          : isEs
+          ? `Informe PDF generado: ${filename}`
+          : `Relatório PDF gerado: ${filename}.${inIframe ? ' Se o download não iniciar dentro do preview, abra em nova aba.' : ''}`
+      );
+    } catch (err) {
+      setPdfError(
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível gerar o relatório em PDF.'
+      );
+    }
   };
 
   const labels = useMemo(
@@ -282,7 +318,27 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
       ];
 
   return (
-    <div className="space-y-6 pb-20 lg:pb-6">
+    <div className="space-y-6 pb-2 lg:pb-6">
+      {isEmbeddedIframe && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-amber-50/80 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-500/30 text-xs text-amber-900 dark:text-amber-200">
+          <span>
+            {isEn
+              ? 'Preview mode: some embedded iframes restrict file downloads. Open in a new tab if a download is blocked.'
+              : isEs
+              ? 'Modo vista previa: algunos iframes restringen descargas. Abre en nueva pestaña si es necesario.'
+              : 'Você está em uma janela incorporada (preview). Caso o navegador bloqueie o download de planilhas ou PDF, abra o app em uma nova aba.'}
+          </span>
+          <a
+            href={typeof window !== 'undefined' ? window.location.href : '#'}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 text-white hover:bg-amber-700 transition-colors whitespace-nowrap shrink-0"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            <span>{isEn ? 'Open in new tab' : isEs ? 'Abrir en nueva pestaña' : 'Abrir em nova aba'}</span>
+          </a>
+        </div>
+      )}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
         {/* SECTION 1: CSV IMPORT */}
         <section className="rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] p-5 sm:p-6 space-y-5">
@@ -596,13 +652,49 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
                       : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
-                  {labels.yearOption} ({activeYear})
+                  {labels.yearOption} ({pdfYear})
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                Ano do relatório
+              </label>
+              <div className="flex items-center justify-between min-h-[44px] px-2 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08]">
+                <button
+                  type="button"
+                  aria-label="Ano anterior do PDF"
+                  onClick={() => setPdfYear((y) => Math.max(1900, y - 1))}
+                  className="px-3 py-1.5 rounded-lg text-xs font-mono text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/5"
+                >
+                  −
+                </button>
+                <input
+                  type="number"
+                  min="1900"
+                  max="9999"
+                  value={pdfYear}
+                  onChange={(e) => {
+                    const yr = parseInt(e.target.value, 10);
+                    if (Number.isFinite(yr) && yr >= 1900 && yr <= 9999) setPdfYear(yr);
+                  }}
+                  aria-label="Ano do relatório PDF"
+                  className="w-20 text-center bg-transparent text-xs font-mono font-semibold text-slate-900 dark:text-white focus:outline-none tabular-nums"
+                />
+                <button
+                  type="button"
+                  aria-label="Próximo ano do PDF"
+                  onClick={() => setPdfYear((y) => y + 1)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-mono text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/5"
+                >
+                  +
                 </button>
               </div>
             </div>
 
             {pdfPeriod === 'month' && (
-              <div className="space-y-2">
+              <div className="space-y-2 sm:col-span-2">
                 <label
                   htmlFor="pdf-month-select"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
@@ -617,7 +709,7 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
                 >
                   {monthNamesFull.map((mName, idx) => (
                     <option key={mName} value={idx}>
-                      {mName} {activeYear}
+                      {mName} {pdfYear}
                     </option>
                   ))}
                 </select>
@@ -711,6 +803,13 @@ export const DownloadCenterView: React.FC<DownloadCenterViewProps> = ({
             <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-500/30 text-xs text-emerald-800 dark:text-emerald-200">
               <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
               <span>{pdfFeedback}</span>
+            </div>
+          )}
+
+          {pdfError && (
+            <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-500/30 text-xs text-rose-800 dark:text-rose-200">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+              <span>{pdfError}</span>
             </div>
           )}
 

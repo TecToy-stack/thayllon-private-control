@@ -35,13 +35,10 @@ import { getInvoiceMonthKey } from './utils/creditCardsEngine';
 import {
   AutoBackupStatus,
   createBackupSnapshotAndPersist,
-  exportVaultBackupJSON,
   getAutoBackupStatus,
   hasOperationalDataForBackup,
-  markBackupCompleted,
   markBackupDirty,
   runAutoBackupIfDue,
-  shareOrDownloadLatestBackupJSON,
 } from './utils/backup';
 import { clearLocalVaultCache, saveCadastralDraft, saveLocalVaultCache } from './utils/localVault';
 import {
@@ -90,7 +87,7 @@ interface AuthSession {
 
 function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
   const clean = createCleanAppState();
-  if (!rawState || !Array.isArray(rawState.rows) || rawState.rows.length === 0) {
+  if (!rawState || !Array.isArray(rawState.rows)) {
     return clean;
   }
   const rawSettings = rawState.settings ?? ({} as Partial<AppSettings>);
@@ -108,7 +105,7 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
     ...clean.settings,
     ...rawSettings,
     language: normalizeLanguage(rawSettings.language ?? loadStoredLanguage()),
-    activeYear: Number.isFinite(rawYear) && rawYear >= 2000 && rawYear <= 2100 ? Math.trunc(rawYear) : clean.settings.activeYear,
+    activeYear: Number.isFinite(rawYear) && rawYear >= 1900 && rawYear <= 9999 ? Math.trunc(rawYear) : clean.settings.activeYear,
     focusMonth: safeFocusMonth,
     closingDay: Number.isFinite(rawClosingDay) ? Math.min(31, Math.max(1, Math.trunc(rawClosingDay))) : clean.settings.closingDay,
     autoLockMinutes: Number.isFinite(rawAutoLock) ? Math.max(1, Math.trunc(rawAutoLock)) : clean.settings.autoLockMinutes,
@@ -204,8 +201,23 @@ function normalizeRestoredState(rawState?: Partial<AppState> | null): AppState {
         })
     : [];
 
+  const sanitizedRows = rawState.rows
+    .filter((r) => Boolean(r && typeof r === 'object' && r.id && r.name))
+    .map((r, idx) => ({
+      ...r,
+      block:
+        r.block === 'income' || r.block === 'fixed' || r.block === 'variable' || r.block === 'savings'
+          ? r.block
+          : 'variable',
+      name: String(r.name).trim() || `CATEGORIA ${idx + 1}`,
+      color: typeof r.color === 'string' && r.color.trim() ? r.color.trim() : undefined,
+      icon: typeof r.icon === 'string' && r.icon.trim() ? r.icon.trim() : undefined,
+      order: Number.isFinite(Number(r.order)) ? Number(r.order) : idx + 1,
+      hidden: Boolean(r.hidden),
+    }));
+
   return {
-    rows: rawState.rows,
+    rows: sanitizedRows,
     entries: sanitizedEntries,
     accounts: sanitizedAccounts,
     creditCards: sanitizedCreditCards,
@@ -611,7 +623,7 @@ export default function App() {
         rowId,
         year,
         month,
-        day: row?.refDay ?? 15,
+        day: 15,
         amount: newTotal,
         description: `${row?.name ?? 'Lançamento'} · ${MONTH_NAMES_SHORT[month]}/${year}`,
         merchant: row?.name ?? 'Ajuste Direto',
@@ -629,17 +641,32 @@ export default function App() {
     });
   };
 
-  const handleAddRow = (row: Omit<CategoryRow, 'id' | 'order'>) => {
+  const handleAddRow = (row: Omit<CategoryRow, 'id' | 'order'>): CategoryRow => {
+    const cleanName = row.name.trim().toUpperCase();
+    const existingBlockRows = stateRef.current.rows.filter((r) => r.block === row.block);
+    const maxOrder = existingBlockRows.reduce((m, r) => Math.max(m, r.order), 0);
+    const newRow: CategoryRow = {
+      id: `row-${row.block}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      block: row.block,
+      name: cleanName,
+      color: row.color,
+      icon: row.icon,
+      order: maxOrder + 1,
+      hidden: row.hidden,
+      alertLimit: row.alertLimit,
+      alertPctThreshold: row.alertPctThreshold,
+      isRecurring: row.isRecurring,
+    };
     setState((prev) => {
       const blockRows = prev.rows.filter((r) => r.block === row.block);
-      const maxOrder = blockRows.reduce((m, r) => Math.max(m, r.order), 0);
-      const newRow: CategoryRow = {
-        ...row,
-        id: `row-${row.block}-${Date.now()}`,
-        order: maxOrder + 1,
+      const prevMaxOrder = blockRows.reduce((m, r) => Math.max(m, r.order), 0);
+      const syncedRow: CategoryRow = {
+        ...newRow,
+        order: prevMaxOrder + 1,
       };
-      return { ...prev, rows: [...prev.rows, newRow] };
+      return { ...prev, rows: [...prev.rows, syncedRow] };
     });
+    return newRow;
   };
 
   const handleUpdateRow = (rowId: string, patch: Partial<CategoryRow>) => {
@@ -647,6 +674,54 @@ export default function App() {
       ...prev,
       rows: prev.rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)),
     }));
+  };
+
+  const handleDeleteRow = (rowId: string) => {
+    const snapshot = stateRef.current;
+    const removedRow = snapshot.rows.find((r) => r.id === rowId);
+    if (!removedRow) return;
+
+    const removedEntries = snapshot.entries.filter((e) => e.rowId === rowId);
+    const removedRules = snapshot.rules.filter((rule) => rule.targetRowId === rowId);
+    const affectedBillIds = new Set(
+      (snapshot.recurringBills ?? [])
+        .filter((b) => b.categoryRowId === rowId)
+        .map((b) => b.id)
+    );
+
+    if (selectedCell?.rowId === rowId) {
+      setSelectedCell(null);
+    }
+
+    setState((prev) => ({
+      ...prev,
+      rows: prev.rows.filter((r) => r.id !== rowId),
+      entries: prev.entries.filter((e) => e.rowId !== rowId),
+      rules: prev.rules.filter((rule) => rule.targetRowId !== rowId),
+      recurringBills: (prev.recurringBills ?? []).map((b) =>
+        b.categoryRowId === rowId ? { ...b, categoryRowId: undefined } : b
+      ),
+    }));
+
+    triggerUndoToast(`Categoria "${removedRow.name}" excluída`, () => {
+      setState((prev) => ({
+        ...prev,
+        rows: prev.rows.some((r) => r.id === removedRow.id)
+          ? prev.rows
+          : [...prev.rows, removedRow],
+        entries: [
+          ...prev.entries,
+          ...removedEntries.filter((re) => !prev.entries.some((e) => e.id === re.id)),
+        ],
+        rules: [
+          ...prev.rules,
+          ...removedRules.filter((rr) => !prev.rules.some((r) => r.id === rr.id)),
+        ],
+        recurringBills: (prev.recurringBills ?? []).map((b) =>
+          affectedBillIds.has(b.id) ? { ...b, categoryRowId: removedRow.id } : b
+        ),
+      }));
+    });
   };
 
   const handleMoveRow = (rowId: string, direction: 'up' | 'down') => {
@@ -995,17 +1070,6 @@ export default function App() {
     }
   };
 
-  // JSON Backup Export
-  const handleExportJSONBackup = () => {
-    if (!authSession) return;
-    try {
-      exportVaultBackupJSON(state, authSession.profile);
-      markBackupCompleted(authSession.cpfId);
-    } catch {
-      // Ignore eventual browser download restriction
-    }
-  };
-
   // Chat Handlers
   const handleAppendMessages = (messages: ChatMessage[]) => {
     setState((prev) => ({
@@ -1093,7 +1157,6 @@ export default function App() {
                 id: rowId,
                 block: item.block,
                 name: item.categoryName.toUpperCase(),
-                refDay: item.day,
                 order: maxOrder + 1,
                 isRecurring: item.isRecurring,
               });
@@ -1184,12 +1247,6 @@ export default function App() {
     setAutoBackupStatus(status);
   };
 
-  const handleShareOrDownloadBackup = async () => {
-    if (!authSession) return;
-    await shareOrDownloadLatestBackupJSON(authSession.cpfId, state, authSession.profile);
-    markBackupCompleted(authSession.cpfId);
-  };
-
   const selectedRow = selectedCell
     ? state.rows.find((r) => r.id === selectedCell.rowId) ?? null
     : null;
@@ -1242,14 +1299,13 @@ export default function App() {
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
         />
 
-        <main className="flex-1 px-4 pt-4 sm:px-6 sm:pt-6 pb-safe-main max-w-[1600px] w-full mx-auto">
-          <AnimatePresence mode="wait">
+        <main className="flex-1 min-w-0 overflow-x-hidden px-3.5 pt-4 sm:px-6 sm:pt-6 pb-safe-main max-w-[1600px] w-full mx-auto">
+          <AnimatePresence initial={false}>
             <motion.div
               key={activeTab}
-              initial={{ opacity: 0, y: 6 }}
+              initial={{ opacity: 0.4, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+              transition={{ duration: 0.1, ease: 'easeOut' }}
             >
               {activeTab === 'matrix' && (
                 <MatrixGridView
@@ -1268,6 +1324,7 @@ export default function App() {
                   onUpdateSettings={updateSettings}
                   onUpdateRow={handleUpdateRow}
                   onAddRow={handleAddRow}
+                  onDeleteRow={handleDeleteRow}
                   onMoveRow={handleMoveRow}
                   onToggleHideRow={handleToggleHideRow}
                   onAddRecurringBill={handleAddRecurringBill}
@@ -1304,6 +1361,7 @@ export default function App() {
                   accounts={state.accounts}
                   alerts={alerts}
                   settings={state.settings}
+                  onUpdateSettings={updateSettings}
                 />
               )}
 
@@ -1376,11 +1434,11 @@ export default function App() {
                   onDeleteRule={handleDeleteRule}
                   onUpdateRow={handleUpdateRow}
                   onAddRow={handleAddRow}
+                  onDeleteRow={handleDeleteRow}
                   onMoveRow={handleMoveRow}
                   onAddGoal={handleAddGoal}
                   onUpdateGoal={handleUpdateGoal}
                   onDeleteGoal={handleDeleteGoal}
-                  onExportJSON={handleExportJSONBackup}
                   onLoadDemo2026Data={handleLoadDemo2026Data}
                   onClearOperationalData={handleClearOperationalData}
                   onImportBackup={handleImportBackup}
@@ -1406,7 +1464,6 @@ export default function App() {
                   onTestReinstallRecovery={handleTestReinstallRecovery}
                   autoBackupStatus={autoBackupStatus}
                   onRunManualBackupNow={handleRunManualBackupNow}
-                  onShareOrDownloadBackup={handleShareOrDownloadBackup}
                 />
               )}
             </motion.div>
@@ -1422,14 +1479,14 @@ export default function App() {
         <button
           type="button"
           onClick={() => setActiveTab('matrix')}
-          className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
+          className={`flex flex-col items-center justify-center gap-0.5 py-1 min-w-0 rounded-lg text-[10px] font-medium ${
             activeTab === 'matrix'
               ? 'text-blue-600 dark:text-blue-400 font-semibold'
               : 'text-slate-500 dark:text-slate-400'
           }`}
         >
-          <TableProperties className="h-4 w-4" />
-          <span>Painel</span>
+          <TableProperties className="h-4 w-4 shrink-0" />
+          <span className="truncate max-w-full">Painel</span>
         </button>
 
         <button
@@ -1438,36 +1495,36 @@ export default function App() {
             setNewEntryFlowType('expense');
             setNewEntryModalOpen(true);
           }}
-          className="flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
+          className="flex flex-col items-center justify-center gap-0.5 py-1 min-w-0 rounded-lg text-[10px] font-semibold text-emerald-600 dark:text-emerald-400"
         >
-          <PlusCircle className="h-4 w-4" />
-          <span>+ / − Rápido</span>
+          <PlusCircle className="h-4 w-4 shrink-0" />
+          <span className="truncate max-w-full">+ / − Rápido</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('cards')}
-          className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
+          className={`flex flex-col items-center justify-center gap-0.5 py-1 min-w-0 rounded-lg text-[10px] font-medium ${
             activeTab === 'cards'
               ? 'text-blue-600 dark:text-blue-400 font-semibold'
               : 'text-slate-500 dark:text-slate-400'
           }`}
         >
-          <CreditCard className="h-4 w-4" />
-          <span>Cartões</span>
+          <CreditCard className="h-4 w-4 shrink-0" />
+          <span className="truncate max-w-full">Cartões</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('settings')}
-          className={`flex flex-col items-center justify-center gap-0.5 py-1 rounded-lg text-[10px] font-medium ${
+          className={`flex flex-col items-center justify-center gap-0.5 py-1 min-w-0 rounded-lg text-[10px] font-medium ${
             activeTab === 'settings'
               ? 'text-blue-600 dark:text-blue-400 font-semibold'
               : 'text-slate-500 dark:text-slate-400'
           }`}
         >
-          <SettingsIcon className="h-4 w-4" />
-          <span>Ajustes</span>
+          <SettingsIcon className="h-4 w-4 shrink-0" />
+          <span className="truncate max-w-full">Ajustes</span>
         </button>
       </nav>
 
@@ -1502,6 +1559,7 @@ export default function App() {
           setNewEntryVoiceAutoStart(false);
         }}
         onAddEntry={handleAddEntry}
+        onAddRow={handleAddRow}
       />
 
       <LockScreenModal
@@ -1517,7 +1575,7 @@ export default function App() {
       {undoToast && (
         <div
           role="status"
-          className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-[#1A2234] text-white border border-white/15 shadow-2xl text-xs max-w-[92vw]"
+          className="fixed bottom-[calc(4.75rem+env(safe-area-inset-bottom,0px))] lg:bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-[#1A2234] text-white border border-white/15 shadow-2xl text-xs max-w-[92vw]"
         >
           <span className="truncate">{undoToast.label}</span>
           <button

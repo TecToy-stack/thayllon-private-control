@@ -11,10 +11,10 @@ import {
 } from '../types/finance';
 import {
   formatBRL,
-  formatCompactDay,
   isDeduplicatedEntry,
   parseInstallmentInfo,
 } from '../utils/financeEngine';
+import { CategoryIconBadge } from '../utils/categoryVisuals';
 import {
   getMonthNamesFull,
   getTranslations,
@@ -73,7 +73,7 @@ export const CellDetailDrawer: React.FC<CellDetailDrawerProps> = ({
 
   useEffect(() => {
     if (row && month !== null) {
-      setNewDay(String(row.refDay ?? 15));
+      setNewDay(String(new Date().getDate()));
       setNewDesc(`${row.name}`);
       setNewMerchant('');
       setNewPaymentMethod(row.id.includes('cartao') ? 'credit' : row.block === 'income' ? 'pix' : 'debit');
@@ -185,25 +185,26 @@ export const CellDetailDrawer: React.FC<CellDetailDrawerProps> = ({
       <div className="fixed inset-0 bg-black/60 backdrop-blur-xs" onClick={onClose} />
       <aside className="relative z-10 w-full max-w-lg bg-white dark:bg-[#111827] border-l border-slate-200 dark:border-white/[0.08] h-full flex flex-col shadow-2xl">
         {/* Header */}
-        <div className="px-6 py-5 border-b border-slate-200 dark:border-white/[0.08] flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-              <span>{blockLabel}</span>
-              <span aria-hidden="true">·</span>
-              <span>{formatCompactDay(row.refDay)}</span>
-              <span aria-hidden="true">·</span>
-              <span>
-                {monthNamesFull[safeMonth]} {year}
-              </span>
+        <div className="px-5 sm:px-6 pt-safe-header pb-4 border-b border-slate-200 dark:border-white/[0.08] flex items-start justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <CategoryIconBadge row={row} size="md" />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <span className="truncate">{blockLabel}</span>
+                <span aria-hidden="true">·</span>
+                <span className="shrink-0">
+                  {monthNamesFull[safeMonth]} {year}
+                </span>
+              </div>
+              <h2 className="mt-0.5 text-base sm:text-lg font-semibold text-slate-900 dark:text-slate-100 truncate">
+                {row.name}
+              </h2>
             </div>
-            <h2 className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">
-              {row.name}
-            </h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
+            className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 shrink-0"
             aria-label={t.modals.cancel}
           >
             <X className="h-5 w-5" />
@@ -211,7 +212,7 @@ export const CellDetailDrawer: React.FC<CellDetailDrawerProps> = ({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+        <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-5 pb-safe-nav space-y-6">
           <div className="grid grid-cols-2 gap-4">
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.07]">
               <div className="text-xs text-slate-500 dark:text-slate-400">{t.modals.cellTotal}</div>
@@ -417,8 +418,8 @@ export const CellDetailDrawer: React.FC<CellDetailDrawerProps> = ({
               {t.modals.addSingleEntryTitle}
             </div>
 
-            <div className="grid grid-cols-3 gap-2.5">
-              <div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+              <div className="col-span-2 sm:col-span-1">
                 <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
                   {t.modals.amountLabel}
                 </label>
@@ -477,8 +478,8 @@ export const CellDetailDrawer: React.FC<CellDetailDrawerProps> = ({
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-2.5">
-              <div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+              <div className="col-span-2 sm:col-span-1">
                 <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
                   {t.modals.natureLabel}
                 </label>

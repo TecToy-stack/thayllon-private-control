@@ -14,8 +14,22 @@ import {
 } from './financeEngine';
 import { getMonthNamesFull } from './i18n';
 
-export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixTotals): void {
-  const year = state.settings.activeYear;
+function savePdfWithFallback(doc: jsPDF, filename: string): { filename: string; inIframe: boolean } {
+  const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+  try {
+    doc.save(filename);
+    return { filename, inIframe };
+  } catch {
+    throw new Error('Não foi possível salvar o relatório PDF neste navegador.');
+  }
+}
+
+export function generatePrivateBankingAnnualPDF(
+  state: AppState,
+  totals: MatrixTotals,
+  targetYear?: number
+): { filename: string; inIframe: boolean } {
+  const year = targetYear ?? state.settings.activeYear;
   const focusMonth = Math.min(
     11,
     Math.max(0, Number.isFinite(state.settings.focusMonth) ? Math.trunc(state.settings.focusMonth) : 10)
@@ -433,8 +447,7 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
     .filter((r) => r.block === 'income' && !r.hidden)
     .sort((a, b) => a.order - b.order)
     .forEach((r) => {
-      const label = r.refDay ? `${r.name} (${formatCompactDay(r.refDay)})` : r.name;
-      drawMatrixRow(label, totals.rowMonthly[r.id] ?? [], totals.rowAnnual[r.id] ?? 0, 'normal');
+      drawMatrixRow(r.name, totals.rowMonthly[r.id] ?? [], totals.rowAnnual[r.id] ?? 0, 'normal');
     });
   drawMatrixRow('TOTAL RECEITAS', totals.incomeMonthly, totals.incomeAnnual, 'subtotal');
 
@@ -444,8 +457,7 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
     .filter((r) => r.block === 'fixed' && !r.hidden)
     .sort((a, b) => a.order - b.order)
     .forEach((r) => {
-      const label = r.refDay ? `${r.name} (${formatCompactDay(r.refDay)})` : r.name;
-      drawMatrixRow(label, totals.rowMonthly[r.id] ?? [], totals.rowAnnual[r.id] ?? 0, 'normal');
+      drawMatrixRow(r.name, totals.rowMonthly[r.id] ?? [], totals.rowAnnual[r.id] ?? 0, 'normal');
     });
   drawMatrixRow('TOTAL FIXAS', totals.fixedMonthly, totals.fixedAnnual, 'subtotal');
 
@@ -455,8 +467,7 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
     .filter((r) => r.block === 'variable' && !r.hidden)
     .sort((a, b) => a.order - b.order)
     .forEach((r) => {
-      const label = r.refDay ? `${r.name} (${formatCompactDay(r.refDay)})` : r.name;
-      drawMatrixRow(label, totals.rowMonthly[r.id] ?? [], totals.rowAnnual[r.id] ?? 0, 'normal');
+      drawMatrixRow(r.name, totals.rowMonthly[r.id] ?? [], totals.rowAnnual[r.id] ?? 0, 'normal');
     });
   drawMatrixRow('TOTAL VARIÁVEL', totals.variableMonthly, totals.variableAnnual, 'subtotal');
 
@@ -465,7 +476,7 @@ export function generatePrivateBankingAnnualPDF(state: AppState, totals: MatrixT
   drawMatrixRow('RESULTADO MENSAL', totals.resultMonthly, totals.resultAnnual, 'subtotal');
   drawMatrixRow('GUARDADO (RESERVA)', totals.savingsMonthly, totals.savingsAnnual, 'highlight');
 
-  doc.save(`ORBE_Financas_Relatorio_${year}.pdf`);
+  return savePdfWithFallback(doc, `ORBE_Financas_Relatorio_${year}.pdf`);
 }
 
 export type PdfReportScope =
@@ -486,6 +497,7 @@ export interface PdfReportOptions {
   scope: PdfReportScope;
   period: PdfReportPeriod;
   focusMonth: number;
+  targetYear?: number;
   statusFilter?: PdfReportStatusFilter;
   language?: AppLanguage;
 }
@@ -501,8 +513,8 @@ export interface PdfReportPreviewStats {
 }
 
 function filterEntriesForPdf(options: PdfReportOptions) {
-  const { state, period, focusMonth, scope, statusFilter = 'all' } = options;
-  const year = state.settings.activeYear;
+  const { state, period, focusMonth, scope, statusFilter = 'all', targetYear } = options;
+  const year = targetYear ?? state.settings.activeYear;
   const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
   const rowMap = new Map(state.rows.map((r) => [r.id, r]));
 
@@ -525,8 +537,8 @@ function filterEntriesForPdf(options: PdfReportOptions) {
 }
 
 export function computePdfReportPreviewStats(options: PdfReportOptions): PdfReportPreviewStats {
-  const { state, totals, period, focusMonth } = options;
-  const year = state.settings.activeYear;
+  const { state, totals, period, focusMonth, targetYear } = options;
+  const year = targetYear ?? state.settings.activeYear;
   const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
 
   const filteredEntries = filterEntriesForPdf(options);
@@ -565,26 +577,28 @@ export function computePdfReportPreviewStats(options: PdfReportOptions): PdfRepo
   };
 }
 
-export function exportCustomPDFReport(options: PdfReportOptions): { filename: string } {
+export function exportCustomPDFReport(
+  options: PdfReportOptions
+): { filename: string; inIframe: boolean } {
   const {
     state,
     totals,
     scope,
     period,
     focusMonth,
+    targetYear,
     statusFilter = 'all',
     language = state.settings.language,
   } = options;
 
-  const year = state.settings.activeYear;
+  const year = targetYear ?? state.settings.activeYear;
   const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
   const monthNames = getMonthNamesFull(language);
   const periodLabel = period === 'month' ? `${monthNames[safeMonth]} ${year}` : `${year}`;
 
   // If user requested complete consolidated annual report with no status filter, reuse the executive landscape PDF
   if (scope === 'consolidated' && period === 'year' && statusFilter === 'all') {
-    generatePrivateBankingAnnualPDF(state, totals);
-    return { filename: `ORBE_Financas_Relatorio_${year}.pdf` };
+    return generatePrivateBankingAnnualPDF(state, totals, year);
   }
 
   const isEn = language === 'en';
@@ -828,7 +842,7 @@ export function exportCustomPDFReport(options: PdfReportOptions): { filename: st
       doc.setFontSize(7);
       doc.text('CATEGORIA', margin + 2.5, curY + 4.4);
       doc.text('BLOCO', margin + 84, curY + 4.4);
-      doc.text('DIA REF.', margin + 122, curY + 4.4);
+      doc.text('LIMITE', margin + 122, curY + 4.4);
       doc.text(period === 'month' ? 'VALOR NO MÊS' : 'VALOR ANUAL', pageW - margin - 2.5, curY + 4.4, {
         align: 'right',
       });
@@ -862,7 +876,7 @@ export function exportCustomPDFReport(options: PdfReportOptions): { filename: st
         doc.text(item.row.name.slice(0, 38), margin + 2.5, curY + 3.9);
         doc.setTextColor(...C_SLATE_MUTED);
         doc.text(blockNames[item.row.block] ?? item.row.block, margin + 84, curY + 3.9);
-        doc.text(item.row.refDay ? formatCompactDay(item.row.refDay) : '—', margin + 122, curY + 3.9);
+        doc.text(item.row.alertLimit ? formatBRL(item.row.alertLimit, false) : '—', margin + 122, curY + 3.9);
 
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(...(item.row.block === 'income' ? C_EMERALD : C_SLATE_DARK));
@@ -1125,7 +1139,6 @@ export function exportCustomPDFReport(options: PdfReportOptions): { filename: st
   const periodSlug =
     period === 'month' ? `${year}-${String(safeMonth + 1).padStart(2, '0')}` : `${year}`;
   const filename = `ORBE_Financas_PDF_${scope}_${periodSlug}.pdf`;
-  doc.save(filename);
-  return { filename };
+  return savePdfWithFallback(doc, filename);
 }
 

@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Calendar,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   CreditCard,
   Pencil,
   Plus,
@@ -20,10 +22,11 @@ import { BRAZILIAN_BANKS } from '../data/brazilBanks';
 import {
   CARD_PURCHASE_CATEGORIES,
   computeAllCreditCardsOverview,
+  expandPurchaseIntoSlices,
   formatMonthYearShort,
   getInvoiceMonthKey,
 } from '../utils/creditCardsEngine';
-import { formatBRL } from '../utils/financeEngine';
+import { formatBRL, shiftYearMonth } from '../utils/financeEngine';
 import { getMonthNamesFull, getMonthNamesShort } from '../utils/i18n';
 import { BankSelectionValue, BankSelectorField } from './BankSelectorField';
 import { CreditCardPieChart } from './CreditCardPieChart';
@@ -260,8 +263,43 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
       .sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate));
   }, [purchases, selectedCardFilter]);
 
+  const consolidatedFutureSchedule = useMemo(() => {
+    const focusAbs = activeYear * 12 + focusMonth;
+    const monthBuckets = new Map<
+      number,
+      { year: number; month: number; label: string; totalAmount: number; unpaidAmount: number }
+    >();
+
+    overview.summaries.forEach((s) => {
+      s.futureSchedule.forEach((item) => {
+        const abs = item.year * 12 + item.month;
+        if (abs < focusAbs) return;
+        const paid = Boolean(paidCardInvoices[getInvoiceMonthKey(s.card.id, item.year, item.month)]);
+        const existing = monthBuckets.get(abs);
+        if (existing) {
+          existing.totalAmount = Number((existing.totalAmount + item.totalAmount).toFixed(2));
+          if (!paid) {
+            existing.unpaidAmount = Number((existing.unpaidAmount + item.totalAmount).toFixed(2));
+          }
+        } else {
+          monthBuckets.set(abs, {
+            year: item.year,
+            month: item.month,
+            label: item.label,
+            totalAmount: Number(item.totalAmount.toFixed(2)),
+            unpaidAmount: paid ? 0 : Number(item.totalAmount.toFixed(2)),
+          });
+        }
+      });
+    });
+
+    return Array.from(monthBuckets.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, bucket]) => bucket);
+  }, [overview.summaries, paidCardInvoices, activeYear, focusMonth]);
+
   return (
-    <div className="space-y-6 pb-24 lg:pb-8">
+    <div className="space-y-6 pb-2 lg:pb-6">
       {/* Header & Quick Actions */}
       <div className="p-5 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -280,7 +318,7 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
             className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 transition-colors whitespace-nowrap shrink-0"
           >
             <CreditCard className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-            <span>+ Novo Cartão</span>
+            <span>Novo Cartão</span>
           </button>
 
           <button
@@ -291,12 +329,12 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
             className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="h-4 w-4" />
-            <span>+ Nova Compra no Cartão</span>
+            <span>Nova Compra no Cartão</span>
           </button>
         </div>
       </div>
 
-      {/* Month & Year Selector */}
+      {/* Month & Unlimited Year Selector */}
       <div className="p-4 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
           <Calendar className="h-4 w-4 text-blue-600 dark:text-blue-400" />
@@ -304,8 +342,29 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
-            {[2025, 2026, 2027].map((yr) => (
+          <div className="inline-flex items-center gap-0.5 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
+            <button
+              type="button"
+              aria-label="Mês anterior"
+              onClick={() => {
+                const prev = shiftYearMonth(activeYear, focusMonth, -1);
+                onUpdateSettings({ activeYear: prev.year, focusMonth: prev.month });
+              }}
+              className="px-2 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              title="Mês anterior"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              aria-label="Ano anterior"
+              onClick={() => onUpdateSettings({ activeYear: Math.max(1900, activeYear - 1) })}
+              className="px-2 py-1 rounded-lg text-xs font-mono text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              title="Ano anterior"
+            >
+              −
+            </button>
+            {[activeYear - 1, activeYear, activeYear + 1].map((yr) => (
               <button
                 key={yr}
                 type="button"
@@ -319,6 +378,27 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
                 {yr}
               </button>
             ))}
+            <button
+              type="button"
+              aria-label="Próximo ano"
+              onClick={() => onUpdateSettings({ activeYear: activeYear + 1 })}
+              className="px-2 py-1 rounded-lg text-xs font-mono text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              title="Próximo ano (2027, 2028+)"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              aria-label="Próximo mês"
+              onClick={() => {
+                const next = shiftYearMonth(activeYear, focusMonth, 1);
+                onUpdateSettings({ activeYear: next.year, focusMonth: next.month });
+              }}
+              className="px-2 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              title="Próximo mês (cruza virada de ano)"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
@@ -396,6 +476,56 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
         totalAvailable={overview.totalAvailable}
         privacyMode={privacyMode}
       />
+
+      {/* Consolidated Future Card Installments Projection (Infinite Years) */}
+      {cards.length > 0 && consolidatedFutureSchedule.length > 0 && (
+        <section className="p-5 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Projeção Consolidada de Faturas & Parcelas ({consolidatedFutureSchedule.length}{' '}
+                {consolidatedFutureSchedule.length === 1 ? 'mês' : 'meses'})
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Impacto mensal somado de todos os cartões, incluindo viradas de ano. Toque no mês para inspecionar.
+              </p>
+            </div>
+            <div className="text-xs font-mono tabular-nums text-blue-600 dark:text-blue-400 font-semibold shrink-0">
+              Total em aberto: {formatBRL(overview.totalCommitted, privacyMode)}
+            </div>
+          </div>
+
+          <div className="flex items-stretch gap-2 overflow-x-auto pb-1">
+            {consolidatedFutureSchedule.map((item) => {
+              const isSelected = item.year === activeYear && item.month === focusMonth;
+              return (
+                <button
+                  key={`${item.year}-${item.month}`}
+                  type="button"
+                  onClick={() => onUpdateSettings({ activeYear: item.year, focusMonth: item.month })}
+                  className={`min-w-[112px] px-3 py-2 rounded-xl border text-left shrink-0 transition-colors ${
+                    isSelected
+                      ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-400 text-blue-700 dark:text-blue-300'
+                      : 'bg-slate-50 dark:bg-[#0D1320] border-slate-200 dark:border-white/[0.07] hover:border-blue-300'
+                  }`}
+                >
+                  <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                    {item.label}
+                  </div>
+                  <div className="mt-0.5 text-sm font-semibold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                    {formatBRL(item.totalAmount, privacyMode)}
+                  </div>
+                  <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                    {item.unpaidAmount > 0
+                      ? `Em aberto ${formatBRL(item.unpaidAmount, privacyMode)}`
+                      : 'Faturas pagas'}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Cards Grid */}
       {cards.length === 0 ? (
@@ -597,7 +727,7 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
                       Cronograma de faturas ({summary.futureSchedule.length} meses)
                     </div>
                     <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                      {summary.futureSchedule.slice(0, 8).map((item) => {
+                      {summary.futureSchedule.map((item) => {
                         const isSelectedMonth =
                           item.year === activeYear && item.month === focusMonth;
                         const paid = Boolean(
@@ -721,30 +851,44 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
 
             {filteredPurchases.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-500 dark:text-slate-400">
-                Nenhuma compra cadastrada. Clique em <strong>+ Nova Compra no Cartão</strong> acima.
+                Nenhuma compra cadastrada. Clique em <strong>Nova Compra no Cartão</strong> acima.
               </div>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-white/[0.06] max-h-96 overflow-y-auto">
                 {filteredPurchases.map((purchase) => {
                   const card = cardMap.get(purchase.cardId);
                   const sliceAmt = purchase.totalAmount / Math.max(1, purchase.installments);
+                  const unpaidSlices = card
+                    ? expandPurchaseIntoSlices(purchase, card, paidCardInvoices).filter((s) => !s.isPaid)
+                    : [];
+                  const unpaidTotal = Number(
+                    unpaidSlices.reduce((sum, s) => sum + s.amount, 0).toFixed(2)
+                  );
                   return (
                     <div
                       key={purchase.id}
-                      className="py-3 flex items-center justify-between gap-3 text-xs"
+                      className="py-3 flex flex-wrap items-center justify-between gap-2.5 text-xs"
                     >
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="font-semibold text-slate-900 dark:text-slate-100 truncate">
                           {purchase.description}
                         </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">
                           {card ? card.bankName : 'Cartão'} · {purchase.installments}x de{' '}
                           {formatBRL(sliceAmt, privacyMode)} ·{' '}
                           {purchase.purchaseDate.split('-').reverse().join('/')}
+                          {card && purchase.installments > 1 && (
+                            <span className="ml-1.5 font-mono text-blue-600 dark:text-blue-400">
+                              ·{' '}
+                              {unpaidSlices.length > 0
+                                ? `Restam ${unpaidSlices.length} (${formatBRL(unpaidTotal, privacyMode)})`
+                                : 'Quitada'}
+                            </span>
+                          )}
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
                           {formatBRL(purchase.totalAmount, privacyMode)}
                         </span>
@@ -776,12 +920,12 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
 
       {/* Modal: Cadastrar / Editar Cartão */}
       {cardModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 pt-safe-screen pb-safe-nav overflow-y-auto">
           <div
             className="fixed inset-0 bg-black/50 backdrop-blur-xs"
             onClick={() => setCardModalOpen(false)}
           />
-          <div className="relative z-10 w-full max-w-lg rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto">
+          <div className="relative z-10 my-auto w-full max-w-lg rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl max-h-[calc(100dvh-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px)-1.25rem)] overflow-y-auto">
             <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
               <h3 className="text-base font-semibold text-slate-900 dark:text-white">
                 {editingCardId ? 'Editar Cartão de Crédito' : 'Cadastrar Cartão de Crédito'}
@@ -831,8 +975,8 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="col-span-2 sm:col-span-1">
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Limite Total (R$)
                   </label>
@@ -898,12 +1042,12 @@ export const CreditCardsView: React.FC<CreditCardsViewProps> = ({
 
       {/* Modal: Nova / Editar Compra no Cartão */}
       {purchaseModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 pt-safe-screen pb-safe-nav overflow-y-auto">
           <div
             className="fixed inset-0 bg-black/50 backdrop-blur-xs"
             onClick={() => setPurchaseModalOpen(false)}
           />
-          <div className="relative z-10 w-full max-w-md rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl overflow-hidden">
+          <div className="relative z-10 my-auto w-full max-w-md rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl max-h-[calc(100dvh-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px)-1.25rem)] overflow-y-auto">
             <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
               <h3 className="text-base font-semibold text-slate-900 dark:text-white">
                 {editingPurchaseId ? 'Editar Compra no Cartão' : 'Nova Compra no Cartão'}

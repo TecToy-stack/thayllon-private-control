@@ -1,14 +1,16 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useDeferredValue, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Search,
   Plus,
+  Minus,
   ArrowUp,
   ArrowDown,
+  Eye,
   EyeOff,
   AlertTriangle,
-  Sparkles,
   CheckCircle2,
   CreditCard,
   Target,
@@ -16,6 +18,11 @@ import {
   Mic,
   Copy,
   PiggyBank,
+  Pencil,
+  Trash2,
+  Check,
+  X,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   AlertItem,
@@ -37,11 +44,12 @@ import {
 import { MonthlyBudgetHero } from './MonthlyBudgetHero';
 import { CreditCardPieChart } from './CreditCardPieChart';
 import {
+  computeContinuousCarryoverAndSavings,
   computeGoalProgress,
   computeMonthSpotlight,
-  computePreviousMonthCarryover,
   formatBRL,
   formatCompactDay,
+  shiftYearMonth,
 } from '../utils/financeEngine';
 import { computeAllCreditCardsOverview } from '../utils/creditCardsEngine';
 import {
@@ -51,6 +59,14 @@ import {
   translateGoalStatus,
   translatePaymentMethod,
 } from '../utils/i18n';
+import {
+  CategoryIconBadge,
+  CategoryIconKey,
+  CategoryVisualPicker,
+  getCategoryVisual,
+  getDefaultCategoryColor,
+  getDefaultCategoryIcon,
+} from '../utils/categoryVisuals';
 
 interface MatrixGridViewProps {
   rows: CategoryRow[];
@@ -68,6 +84,7 @@ interface MatrixGridViewProps {
   onUpdateSettings: (patch: Partial<AppSettings>) => void;
   onUpdateRow: (rowId: string, patch: Partial<CategoryRow>) => void;
   onAddRow: (row: Omit<CategoryRow, 'id' | 'order'>) => void;
+  onDeleteRow: (rowId: string) => void;
   onMoveRow: (rowId: string, direction: 'up' | 'down') => void;
   onToggleHideRow: (rowId: string) => void;
   onAddRecurringBill: (bill: Omit<RecurringBill, 'id' | 'createdAt'>) => void;
@@ -98,6 +115,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   onUpdateSettings,
   onUpdateRow,
   onAddRow,
+  onDeleteRow,
   onMoveRow,
   onToggleHideRow,
   onAddRecurringBill,
@@ -114,6 +132,8 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   const [search, setSearch] = useState('');
   const [feedFilter, setFeedFilter] = useState<'all' | 'credit' | 'debit' | 'pix' | 'income'>('all');
   const [feedSearch, setFeedSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
+  const deferredFeedSearch = useDeferredValue(feedSearch);
   const [collapsedBlocks, setCollapsedBlocks] = useState<Record<BlockType, boolean>>({
     income: false,
     fixed: false,
@@ -122,9 +142,14 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   });
   const [showNewRowForm, setShowNewRowForm] = useState(false);
   const [showAnnualSection, setShowAnnualSection] = useState(false);
+  const [customizeGridMode, setCustomizeGridMode] = useState(false);
+  const [showHiddenRows, setShowHiddenRows] = useState(false);
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [editingRowName, setEditingRowName] = useState('');
   const [newRowBlock, setNewRowBlock] = useState<BlockType>('variable');
   const [newRowName, setNewRowName] = useState('');
-  const [newRowDay, setNewRowDay] = useState('');
+  const [newRowColor, setNewRowColor] = useState('#2563EB');
+  const [newRowIcon, setNewRowIcon] = useState<CategoryIconKey>('tag');
   const [newRowLimit, setNewRowLimit] = useState('');
   const dailyControlRef = useRef<HTMLDivElement>(null);
 
@@ -159,34 +184,37 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
     [creditCards, cardPurchases, paidCardInvoices, activeYear, focusMonth]
   );
 
-  const accountBalanceTotal = useMemo(
-    () =>
-      accounts
-        .filter((a) => a.status === 'active')
-        .reduce((sum, a) => sum + a.balance, 0),
+  const activeBankAccounts = useMemo(
+    () => accounts.filter((a) => a.status === 'active' && a.type !== 'Cartão de Crédito'),
     [accounts]
   );
 
-  const previousMonthCarryover = useMemo(
-    () => computePreviousMonthCarryover(totals, focusMonth),
-    [totals, focusMonth]
+  const accountBalanceTotal = useMemo(
+    () => activeBankAccounts.reduce((sum, a) => sum + a.balance, 0),
+    [activeBankAccounts]
   );
 
+  const continuousSummary = useMemo(
+    () => computeContinuousCarryoverAndSavings(rows, entries, activeYear, focusMonth),
+    [rows, entries, activeYear, focusMonth]
+  );
+  const previousMonthCarryover = continuousSummary.previousMonthCarryover;
+
   const displayAccountBalance =
-    accounts.length > 0
+    activeBankAccounts.length > 0
       ? accountBalanceTotal
-      : Number((spotlight.result + previousMonthCarryover).toFixed(2));
+      : Number((spotlight.result - spotlight.savings + previousMonthCarryover).toFixed(2));
   const displayMonthInvoice =
     creditCards.length > 0 ? cardsOverview.monthTotalInvoice : spotlight.totalCardInvoices;
 
   const filteredFeed = useMemo(() => {
+    const q = deferredFeedSearch.trim().toLowerCase();
     return spotlight.transactions.filter((tx) => {
       if (feedFilter === 'income' && tx.block !== 'income') return false;
       if (feedFilter === 'credit' && (tx.block === 'income' || tx.paymentMethod !== 'credit')) return false;
       if (feedFilter === 'debit' && (tx.block === 'income' || tx.paymentMethod !== 'debit')) return false;
       if (feedFilter === 'pix' && (tx.block === 'income' || tx.paymentMethod !== 'pix')) return false;
-      if (feedSearch.trim()) {
-        const q = feedSearch.toLowerCase();
+      if (q) {
         return (
           tx.merchant.toLowerCase().includes(q) ||
           tx.categoryName.toLowerCase().includes(q) ||
@@ -195,7 +223,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
       }
       return true;
     });
-  }, [spotlight.transactions, feedFilter, feedSearch]);
+  }, [spotlight.transactions, feedFilter, deferredFeedSearch]);
 
   const rawMethodTotal =
     spotlight.creditSpent + spotlight.debitSpent + spotlight.pixSpent + spotlight.otherSpent;
@@ -234,16 +262,24 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
     return map;
   }, [entries, activeYear]);
 
-  const filterRow = (row: CategoryRow) => {
-    if (row.hidden) return false;
-    if (!search.trim()) return true;
-    return row.name.toLowerCase().includes(search.trim().toLowerCase());
-  };
+  const rowMap = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
-  const incomeRows = rows.filter((r) => r.block === 'income' && filterRow(r)).sort((a, b) => a.order - b.order);
-  const fixedRows = rows.filter((r) => r.block === 'fixed' && filterRow(r)).sort((a, b) => a.order - b.order);
-  const variableRows = rows.filter((r) => r.block === 'variable' && filterRow(r)).sort((a, b) => a.order - b.order);
-  const savingsRows = rows.filter((r) => r.block === 'savings' && filterRow(r)).sort((a, b) => a.order - b.order);
+  const { incomeRows, fixedRows, variableRows, savingsRows } = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    const matches = (row: CategoryRow) => {
+      if (row.hidden && !showHiddenRows) return false;
+      if (!q) return true;
+      return row.name.toLowerCase().includes(q);
+    };
+
+    const byOrder = (a: CategoryRow, b: CategoryRow) => a.order - b.order;
+    return {
+      incomeRows: rows.filter((r) => r.block === 'income' && matches(r)).sort(byOrder),
+      fixedRows: rows.filter((r) => r.block === 'fixed' && matches(r)).sort(byOrder),
+      variableRows: rows.filter((r) => r.block === 'variable' && matches(r)).sort(byOrder),
+      savingsRows: rows.filter((r) => r.block === 'savings' && matches(r)).sort(byOrder),
+    };
+  }, [rows, showHiddenRows, deferredSearch]);
 
   const toggleBlock = (block: BlockType) => {
     setCollapsedBlocks((prev) => ({ ...prev, [block]: !prev[block] }));
@@ -252,16 +288,17 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
   const handleCreateRow = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRowName.trim()) return;
-    const refDayNum = parseInt(newRowDay, 10);
     const limitNum = parseFloat(newRowLimit.replace(',', '.'));
     onAddRow({
       block: newRowBlock,
       name: newRowName.trim().toUpperCase(),
-      refDay: Number.isFinite(refDayNum) && refDayNum >= 1 && refDayNum <= 31 ? refDayNum : undefined,
+      color: newRowColor,
+      icon: newRowIcon,
       alertLimit: Number.isFinite(limitNum) && limitNum > 0 ? limitNum : undefined,
     });
     setNewRowName('');
-    setNewRowDay('');
+    setNewRowColor(getDefaultCategoryColor(newRowBlock));
+    setNewRowIcon(getDefaultCategoryIcon(newRowBlock));
     setNewRowLimit('');
     setShowNewRowForm(false);
   };
@@ -271,115 +308,238 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
     return blockRows.map((row) => {
       const monthly = totals.rowMonthly[row.id] ?? Array(12).fill(0);
       const annual = totals.rowAnnual[row.id] ?? 0;
+      const isEditingThis = editingRowId === row.id;
+      const visual = getCategoryVisual(row);
 
       return (
-        <tr
-          key={row.id}
-          className="group border-b border-slate-100 dark:border-white/[0.05] hover:bg-slate-50/90 dark:hover:bg-[#1A2234]/60 transition-colors"
-        >
-          <td className="sticky left-0 z-10 bg-white dark:bg-[#111827] group-hover:bg-slate-50 dark:group-hover:bg-[#1A2234] border-r border-slate-200 dark:border-white/[0.08] px-3.5 py-2.5 min-w-[220px] max-w-[250px]">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">
-                    {row.name}
-                  </span>
-                  {row.refDay && (
-                    <span className="font-mono text-[10px] text-blue-600 dark:text-blue-400 tabular-nums shrink-0">
-                      {formatCompactDay(row.refDay)}
+        <React.Fragment key={row.id}>
+          <tr
+            className={`group border-b border-slate-100 dark:border-white/[0.05] hover:bg-slate-50/90 dark:hover:bg-[#1A2234]/60 transition-colors ${
+              row.hidden ? 'opacity-60' : ''
+            }`}
+          >
+            <td className="sticky left-0 z-10 bg-white dark:bg-[#111827] group-hover:bg-slate-50 dark:group-hover:bg-[#1A2234] border-r border-slate-200 dark:border-white/[0.08] px-2.5 sm:px-3 py-2.5 min-w-[144px] max-w-[172px] sm:min-w-[205px] sm:max-w-[260px]">
+              {isEditingThis ? (
+                <div className="flex items-center gap-1.5">
+                  <CategoryIconBadge row={row} size="xs" />
+                  <input
+                    type="text"
+                    value={editingRowName}
+                    onChange={(e) => setEditingRowName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const clean = editingRowName.trim();
+                        if (clean) onUpdateRow(row.id, { name: clean.toUpperCase() });
+                        setEditingRowId(null);
+                      } else if (e.key === 'Escape') {
+                        setEditingRowId(null);
+                      }
+                    }}
+                    className="flex-1 min-w-0 px-2 py-1 rounded text-xs bg-slate-50 dark:bg-[#0D1320] border border-blue-400 text-slate-900 dark:text-white"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const clean = editingRowName.trim();
+                      if (clean) onUpdateRow(row.id, { name: clean.toUpperCase() });
+                      setEditingRowId(null);
+                    }}
+                    className="p-1 rounded bg-blue-600 text-white shrink-0"
+                    title="Concluir"
+                  >
+                    <Check className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingRowId(null)}
+                    className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shrink-0"
+                    title="Cancelar"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <CategoryIconBadge row={row} size="xs" />
+                    <span className="text-xs font-medium text-slate-900 dark:text-slate-100 truncate">
+                      {row.name}
                     </span>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                <button
-                  type="button"
-                  onClick={() => onMoveRow(row.id, 'up')}
-                  className="p-1 rounded hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                  title={t.matrix.moveUp}
-                >
-                  <ArrowUp className="h-3 w-3" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onMoveRow(row.id, 'down')}
-                  className="p-1 rounded hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                  title={t.matrix.moveDown}
-                >
-                  <ArrowDown className="h-3 w-3" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onToggleHideRow(row.id)}
-                  className="p-1 rounded hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                  title={t.matrix.hideRow}
-                >
-                  <EyeOff className="h-3 w-3" />
-                </button>
-              </div>
-            </div>
-          </td>
-
-          {visibleMonths.map((m) => {
-            const val = monthly[m] ?? 0;
-            const cellAlert = alertMap.get(`${row.id}-${m}`);
-            const count = entryCountMap.get(`${row.id}-${m}`) ?? 0;
-            const isFocus = m === focusMonth;
-
-            return (
-              <td
-                key={m}
-                onClick={() => onSelectCell(row, m)}
-                className={`px-3 py-2.5 text-right font-mono text-xs tabular-nums cursor-pointer transition-colors border-r border-slate-100/80 dark:border-white/[0.03] min-w-[108px] ${
-                  cellAlert?.severity === 'critical'
-                    ? 'bg-red-50/70 dark:bg-red-950/20 text-red-700 dark:text-red-300'
-                    : cellAlert?.severity === 'warning'
-                    ? 'bg-amber-50/60 dark:bg-amber-950/20 text-amber-700 dark:text-amber-300'
-                    : cellAlert?.severity === 'info'
-                    ? 'bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300'
-                    : isFocus
-                    ? 'bg-blue-50/70 dark:bg-blue-950/25 text-slate-900 dark:text-slate-100 hover:bg-blue-100/70'
-                    : val === 0
-                    ? 'text-slate-400 dark:text-slate-600 hover:bg-slate-100/80 dark:hover:bg-white/[0.04]'
-                    : 'text-slate-800 dark:text-slate-200 hover:bg-blue-50/50 dark:hover:bg-white/[0.04]'
-                }`}
-                title={
-                  cellAlert
-                    ? `${cellAlert.title} — ${t.matrix.inspectCell}`
-                    : `${row.name} · ${monthNamesFull[m]}`
-                }
-              >
-                <div className="flex items-center justify-end gap-1.5">
-                  {cellAlert && <AlertTriangle className="h-3 w-3 shrink-0 opacity-80" />}
-                  <span>{formatBRL(val, privacyMode)}</span>
-                </div>
-                {count > 1 && !privacyMode && (
-                  <div className="text-[10px] text-slate-400 dark:text-slate-500">
-                    {count} {t.matrix.entriesShort}
+                    {row.hidden && (
+                      <span className="text-[10px] text-amber-600 dark:text-amber-300 shrink-0">
+                        (Oculta)
+                      </span>
+                    )}
                   </div>
-                )}
-              </td>
-            );
-          })}
+                  <div
+                    className={`flex items-center gap-0.5 shrink-0 transition-opacity ${
+                      customizeGridMode ? 'opacity-100' : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingRowId(row.id);
+                        setEditingRowName(row.name);
+                      }}
+                      className="p-1 rounded hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
+                      title="Editar nome, cor ou ícone"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    {customizeGridMode && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onMoveRow(row.id, 'up')}
+                          className="p-1 rounded hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                          title={t.matrix.moveUp}
+                        >
+                          <ArrowUp className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onMoveRow(row.id, 'down')}
+                          className="p-1 rounded hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                          title={t.matrix.moveDown}
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onToggleHideRow(row.id)}
+                          className="p-1 rounded hover:bg-slate-200/70 dark:hover:bg-white/10 text-slate-400 hover:text-amber-600 dark:hover:text-amber-300"
+                          title={row.hidden ? 'Mostrar linha' : t.matrix.hideRow}
+                        >
+                          {row.hidden ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteRow(row.id)}
+                          className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-500"
+                          title="Excluir linha"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </td>
 
-          <td className="sticky right-0 z-10 bg-slate-50/95 dark:bg-[#0D1320]/95 group-hover:bg-slate-100 dark:group-hover:bg-[#1A2234] border-l border-slate-200 dark:border-white/[0.08] px-3.5 py-2.5 text-right font-mono text-xs font-semibold tabular-nums text-slate-900 dark:text-slate-100 min-w-[132px]">
-            {formatBRL(annual, privacyMode)}
-          </td>
-        </tr>
+            {visibleMonths.map((m) => {
+              const val = monthly[m] ?? 0;
+              const cellAlert = alertMap.get(`${row.id}-${m}`);
+              const count = entryCountMap.get(`${row.id}-${m}`) ?? 0;
+              const isFocus = m === focusMonth;
+
+              return (
+                <td
+                  key={m}
+                  onClick={() => onSelectCell(row, m)}
+                  className={`px-3 py-2.5 text-right font-mono text-xs tabular-nums cursor-pointer transition-colors border-r border-slate-100/80 dark:border-white/[0.03] min-w-[108px] ${
+                    cellAlert?.severity === 'critical'
+                      ? 'bg-red-50/70 dark:bg-red-950/20 text-red-700 dark:text-red-300'
+                      : cellAlert?.severity === 'warning'
+                      ? 'bg-amber-50/60 dark:bg-amber-950/20 text-amber-700 dark:text-amber-300'
+                      : cellAlert?.severity === 'info'
+                      ? 'bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-300'
+                      : isFocus
+                      ? 'bg-blue-50/70 dark:bg-blue-950/25 text-slate-900 dark:text-slate-100 hover:bg-blue-100/70'
+                      : val === 0
+                      ? 'text-slate-400 dark:text-slate-600 hover:bg-slate-100/80 dark:hover:bg-white/[0.04]'
+                      : 'text-slate-800 dark:text-slate-200 hover:bg-blue-50/50 dark:hover:bg-white/[0.04]'
+                  }`}
+                  title={
+                    cellAlert
+                      ? `${cellAlert.title} — ${t.matrix.inspectCell}`
+                      : `${row.name} · ${monthNamesFull[m]}`
+                  }
+                >
+                  <div className="flex items-center justify-end gap-1.5">
+                    {cellAlert && <AlertTriangle className="h-3 w-3 shrink-0 opacity-80" />}
+                    <span>{formatBRL(val, privacyMode)}</span>
+                  </div>
+                  {count > 1 && !privacyMode && (
+                    <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                      {count} {t.matrix.entriesShort}
+                    </div>
+                  )}
+                </td>
+              );
+            })}
+
+            <td className="md:sticky md:right-0 md:z-10 bg-slate-50/95 dark:bg-[#0D1320]/95 group-hover:bg-slate-100 dark:group-hover:bg-[#1A2234] border-l border-slate-200 dark:border-white/[0.08] px-3 sm:px-3.5 py-2.5 text-right font-mono text-xs font-semibold tabular-nums text-slate-900 dark:text-slate-100 min-w-[116px] sm:min-w-[132px]">
+              {formatBRL(annual, privacyMode)}
+            </td>
+          </tr>
+
+          {isEditingThis && (
+            <tr className="bg-slate-50 dark:bg-[#0D1320] border-b border-blue-200 dark:border-blue-500/30">
+              <td colSpan={visibleMonths.length + 2} className="px-4 py-3">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 max-w-2xl">
+                  <div className="flex-1">
+                    <CategoryVisualPicker
+                      color={visual.color}
+                      icon={visual.iconKey}
+                      onChangeColor={(nextColor) => onUpdateRow(row.id, { color: nextColor })}
+                      onChangeIcon={(nextIcon) => onUpdateRow(row.id, { icon: nextIcon })}
+                      compact
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <select
+                      value={row.block}
+                      onChange={(e) => onUpdateRow(row.id, { block: e.target.value as BlockType })}
+                      className="px-2.5 py-1.5 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] text-slate-800 dark:text-slate-200"
+                    >
+                      <option value="income">{t.settings.grid.blockIncome}</option>
+                      <option value="fixed">{t.settings.grid.blockFixed}</option>
+                      <option value="variable">{t.settings.grid.blockVariable}</option>
+                      <option value="savings">{t.settings.grid.blockSavings}</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => onToggleHideRow(row.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-white/[0.1] text-slate-600 dark:text-slate-300"
+                    >
+                      {row.hidden ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+                      <span>{row.hidden ? 'Mostrar' : 'Ocultar'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingRowId(null);
+                        onDeleteRow(row.id);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-300 border border-red-200 dark:border-red-500/30"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Excluir</span>
+                    </button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          )}
+        </React.Fragment>
       );
     });
   };
 
   return (
-    <div className="space-y-6 pb-20 lg:pb-6">
+    <div className="space-y-5 sm:space-y-6 pb-2 lg:pb-6">
       {/* ==================== 0A. ACESSO RÁPIDO MOBILE-FIRST (+ ENTRADA / - DESPESA / + COMPRA CARTÃO) ==================== */}
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
         <div className="flex items-center gap-4 min-w-0">
           <div className="text-xs text-slate-500 dark:text-slate-400">
             <span className="block text-[11px] font-medium">
-              {accounts.length > 0
-                ? `Saldo em Conta (${accounts.filter((a) => a.status === 'active').length} ativa${accounts.filter((a) => a.status === 'active').length === 1 ? '' : 's'})`
-                : `Resultado (${monthNamesShort[focusMonth]})`}
+              {activeBankAccounts.length > 0
+                ? `Saldo em Conta (${activeBankAccounts.length} ativa${activeBankAccounts.length === 1 ? '' : 's'})`
+                : `Livre c/ Saldo Ant. (${monthNamesShort[focusMonth]})`}
             </span>
             <strong
               className={`text-lg sm:text-xl font-mono tabular-nums ${
@@ -399,14 +559,15 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="h-3.5 w-3.5" />
-            <span>+ Entrada</span>
+            <span>Entrada</span>
           </button>
           <button
             type="button"
             onClick={() => onQuickEntry('expense')}
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:opacity-90 transition-opacity whitespace-nowrap shrink-0"
           >
-            <span>- Despesa</span>
+            <Minus className="h-3.5 w-3.5" />
+            <span>Despesa</span>
           </button>
           {onQuickVoiceEntry && (
             <button
@@ -425,7 +586,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0"
           >
             <CreditCard className="h-3.5 w-3.5" />
-            <span>+ Compra Cartão</span>
+            <span>Compra Cartão</span>
           </button>
         </div>
       </div>
@@ -465,22 +626,72 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             </div>
           </div>
 
-          {/* Month Selector Pills */}
-          <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-white dark:bg-[#1A2234]/80 border border-slate-200 dark:border-white/[0.08]">
-            {monthNamesShort.map((mName, idx) => (
+          {/* Month & Unlimited Year Selector */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center rounded-xl bg-white dark:bg-[#1A2234]/80 border border-slate-200 dark:border-white/[0.08] overflow-hidden shrink-0">
               <button
-                key={mName}
                 type="button"
-                onClick={() => onUpdateSettings({ focusMonth: idx })}
-                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-mono font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  focusMonth === idx
-                    ? 'bg-blue-600 text-white font-semibold'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5'
-                }`}
+                aria-label="Mês anterior"
+                onClick={() => {
+                  const prev = shiftYearMonth(activeYear, focusMonth, -1);
+                  onUpdateSettings({ activeYear: prev.year, focusMonth: prev.month });
+                }}
+                className="px-2 py-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5"
+                title="Mês anterior (navega entre anos)"
               >
-                {mName}
+                <ChevronLeft className="h-3.5 w-3.5" />
               </button>
-            ))}
+              <button
+                type="button"
+                aria-label="Ano anterior"
+                onClick={() => onUpdateSettings({ activeYear: Math.max(1900, activeYear - 1) })}
+                className="px-2 py-1.5 text-[11px] font-mono text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 border-l border-slate-200 dark:border-white/[0.08]"
+                title="Ano anterior"
+              >
+                −
+              </button>
+              <span className="px-2.5 py-1.5 text-xs font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
+                {activeYear}
+              </span>
+              <button
+                type="button"
+                aria-label="Próximo ano"
+                onClick={() => onUpdateSettings({ activeYear: activeYear + 1 })}
+                className="px-2 py-1.5 text-[11px] font-mono text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 border-r border-slate-200 dark:border-white/[0.08]"
+                title="Próximo ano (2027, 2028+)"
+              >
+                +
+              </button>
+              <button
+                type="button"
+                aria-label="Próximo mês"
+                onClick={() => {
+                  const next = shiftYearMonth(activeYear, focusMonth, 1);
+                  onUpdateSettings({ activeYear: next.year, focusMonth: next.month });
+                }}
+                className="px-2 py-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5"
+                title="Próximo mês (cruza Dec → Jan)"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-white dark:bg-[#1A2234]/80 border border-slate-200 dark:border-white/[0.08]">
+              {monthNamesShort.map((mName, idx) => (
+                <button
+                  key={mName}
+                  type="button"
+                  onClick={() => onUpdateSettings({ focusMonth: idx })}
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-mono font-medium transition-colors whitespace-nowrap shrink-0 ${
+                    focusMonth === idx
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5'
+                  }`}
+                >
+                  {mName}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -517,7 +728,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
               <PiggyBank className="h-4 w-4 text-blue-600 dark:text-blue-400" />
             </div>
             <div className="mt-1.5 text-2xl font-semibold font-mono tabular-nums text-blue-600 dark:text-blue-400">
-              {formatBRL(totals.savingsAnnual, privacyMode)}
+              {formatBRL(continuousSummary.isolatedSavingsTotal, privacyMode)}
             </div>
             <div className="mt-1 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate">
               Em {monthNamesShort[focusMonth]}: {formatBRL(spotlight.savings, privacyMode)} · Isolado dos gastos
@@ -588,7 +799,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
               {cardsOverview.summaries.length === 0 ? (
                 <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-dashed border-slate-300 dark:border-white/[0.1] flex items-center justify-between gap-3">
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    Nenhum cartão cadastrado. Adicione seu banco (Nubank, Itaú, Bradesco, Inter, Wise...) para acompanhar limites e parcelas.
+                    Nenhum cartão cadastrado.
                   </div>
                   <button
                     type="button"
@@ -741,7 +952,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
+                <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06] max-w-full">
                   {(
                     [
                       { id: 'all', label: t.matrix.filterAll },
@@ -785,7 +996,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                   </div>
                 ) : (
                   filteredFeed.map((tx) => {
-                    const targetRow = rows.find((r) => r.id === tx.rowId);
+                    const targetRow = rowMap.get(tx.rowId);
                     const isIncome = tx.block === 'income';
                     return (
                       <div
@@ -793,7 +1004,8 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                         onClick={() => targetRow && onSelectCell(targetRow, focusMonth)}
                         className="px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-[#1A2234]/60 cursor-pointer flex items-center justify-between gap-3 text-xs transition-colors"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <CategoryIconBadge row={targetRow} size="xs" />
                           <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 shrink-0 tabular-nums">
                             D/{String(tx.day).padStart(2, '0')}
                           </span>
@@ -874,6 +1086,9 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
           rows={rows}
           entries={entries}
           accounts={accounts}
+          creditCards={creditCards}
+          cardPurchases={cardPurchases}
+          paidCardInvoices={paidCardInvoices}
           recurringBills={recurringBills}
           totals={totals}
           activeYear={activeYear}
@@ -886,6 +1101,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
           onDeleteRecurringBill={onDeleteRecurringBill}
           onUpdateRow={onUpdateRow}
           onSelectCell={onSelectCell}
+          onOpenCardsHub={onOpenCardsHub}
         />
       </div>
 
@@ -1092,12 +1308,20 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06]">
-                  {[2025, 2026, 2027].map((yr) => (
+                  <button
+                    type="button"
+                    aria-label="Ano anterior na grade"
+                    onClick={() => onUpdateSettings({ activeYear: Math.max(1900, activeYear - 1) })}
+                    className="px-2 py-1 rounded-md text-xs font-mono text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                  >
+                    −
+                  </button>
+                  {[activeYear - 1, activeYear, activeYear + 1, activeYear + 2].map((yr) => (
                     <button
                       key={yr}
                       type="button"
                       onClick={() => onUpdateSettings({ activeYear: yr })}
-                      className={`px-3 py-1 rounded-md text-xs font-mono font-medium transition-colors ${
+                      className={`px-2.5 py-1 rounded-md text-xs font-mono font-medium transition-colors ${
                         activeYear === yr
                           ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 shadow-xs'
                           : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -1106,6 +1330,14 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                       {yr}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    aria-label="Próximo ano na grade"
+                    onClick={() => onUpdateSettings({ activeYear: activeYear + 1 })}
+                    className="px-2 py-1 rounded-md text-xs font-mono text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                  >
+                    +
+                  </button>
                 </div>
 
                 <div className="relative">
@@ -1132,77 +1364,108 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowNewRowForm((v) => !v)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-[#1A2234] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-white/[0.08] hover:bg-slate-200/70 dark:hover:bg-[#232D42] transition-colors whitespace-nowrap"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>{t.matrix.addRow}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {rows.some((r) => r.hidden) && (
+                  <button
+                    type="button"
+                    onClick={() => setShowHiddenRows((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
+                      showHiddenRows
+                        ? 'bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/40 text-amber-700 dark:text-amber-300'
+                        : 'bg-slate-50 dark:bg-[#0D1320] border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    <span>Ocultas ({rows.filter((r) => r.hidden).length})</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setCustomizeGridMode((v) => !v)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
+                    customizeGridMode
+                      ? 'bg-blue-600 border-blue-600 text-white'
+                      : 'bg-slate-50 dark:bg-[#0D1320] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5'
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>{customizeGridMode ? 'Concluir linhas' : 'Personalizar linhas'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowNewRowForm((v) => !v)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] hover:opacity-90 transition-opacity whitespace-nowrap shrink-0"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>{t.matrix.addRow}</span>
+                </button>
+              </div>
             </div>
 
             {showNewRowForm && (
               <form
                 onSubmit={handleCreateRow}
-                className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-blue-300 dark:border-blue-500/40 grid grid-cols-1 sm:grid-cols-5 gap-3 items-end"
+                className="p-4 rounded-xl bg-white dark:bg-[#111827] border border-blue-300 dark:border-blue-500/40 space-y-3"
               >
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    {t.matrix.blockLabel}
-                  </label>
-                  <select
-                    value={newRowBlock}
-                    onChange={(e) => setNewRowBlock(e.target.value as BlockType)}
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  >
-                    <option value="income">{t.settings.grid.blockIncome}</option>
-                    <option value="fixed">{t.settings.grid.blockFixed}</option>
-                    <option value="variable">{t.settings.grid.blockVariable}</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                  <div>
+                    <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                      {t.matrix.blockLabel}
+                    </label>
+                    <select
+                      value={newRowBlock}
+                      onChange={(e) => {
+                        const nextBlock = e.target.value as BlockType;
+                        setNewRowBlock(nextBlock);
+                        setNewRowColor(getDefaultCategoryColor(nextBlock));
+                        setNewRowIcon(getDefaultCategoryIcon(nextBlock));
+                      }}
+                      className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                    >
+                      <option value="income">{t.settings.grid.blockIncome}</option>
+                      <option value="fixed">{t.settings.grid.blockFixed}</option>
+                      <option value="variable">{t.settings.grid.blockVariable}</option>
+                      <option value="savings">{t.settings.grid.blockSavings}</option>
+                    </select>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                      {t.matrix.rowNameLabel}
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={newRowName}
+                      onChange={(e) => setNewRowName(e.target.value)}
+                      placeholder={t.matrix.rowNamePlaceholder}
+                      className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 whitespace-nowrap"
+                    >
+                      {t.matrix.createRow}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewRowForm(false)}
+                      className="px-3 py-2 rounded-lg text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 whitespace-nowrap"
+                    >
+                      {t.matrix.cancel}
+                    </button>
+                  </div>
                 </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    {t.matrix.rowNameLabel}
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={newRowName}
-                    onChange={(e) => setNewRowName(e.target.value)}
-                    placeholder={t.matrix.rowNamePlaceholder}
-                    className="w-full px-3 py-2 rounded-lg text-xs bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                    {t.matrix.refDayOpt}
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="31"
-                    value={newRowDay}
-                    onChange={(e) => setNewRowDay(e.target.value)}
-                    placeholder="15"
-                    className="w-full px-3 py-2 rounded-lg text-xs font-mono bg-slate-50 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="submit"
-                    className="flex-1 px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700"
-                  >
-                    {t.matrix.createRow}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowNewRowForm(false)}
-                    className="px-3 py-2 rounded-lg text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"
-                  >
-                    {t.matrix.cancel}
-                  </button>
-                </div>
+
+                <CategoryVisualPicker
+                  color={newRowColor}
+                  icon={newRowIcon}
+                  onChangeColor={setNewRowColor}
+                  onChangeIcon={setNewRowIcon}
+                />
               </form>
             )}
 
@@ -1212,14 +1475,14 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
           <table className="w-full border-collapse text-left">
             <thead>
               <tr className="bg-slate-50 dark:bg-[#0D1320] border-b border-slate-200 dark:border-white/[0.08]">
-                <th className="sticky left-0 z-20 bg-slate-50 dark:bg-[#0D1320] border-r border-slate-200 dark:border-white/[0.08] px-3.5 py-3 text-xs font-semibold text-slate-700 dark:text-slate-200 min-w-[220px]">
+                <th className="sticky left-0 z-20 bg-slate-50 dark:bg-[#0D1320] border-r border-slate-200 dark:border-white/[0.08] px-2.5 sm:px-3.5 py-3 text-xs font-semibold text-slate-700 dark:text-slate-200 min-w-[144px] max-w-[172px] sm:min-w-[205px] sm:max-w-[260px]">
                   {t.matrix.colCategoryRef}
                 </th>
                 {visibleMonths.map((m) => (
                   <th
                     key={m}
                     onClick={() => onUpdateSettings({ focusMonth: m })}
-                    className={`px-3 py-3 text-right text-xs font-semibold border-r border-slate-200/60 dark:border-white/[0.04] min-w-[108px] cursor-pointer transition-colors ${
+                    className={`px-3 py-3 text-right text-xs font-semibold border-r border-slate-200/60 dark:border-white/[0.04] min-w-[104px] sm:min-w-[108px] cursor-pointer transition-colors ${
                       m === focusMonth
                         ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300'
                         : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5'
@@ -1229,7 +1492,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                     {monthNamesShort[m]}
                   </th>
                 ))}
-                <th className="sticky right-0 z-20 bg-slate-100 dark:bg-[#1A2234] border-l border-slate-200 dark:border-white/[0.08] px-3.5 py-3 text-right text-xs font-semibold text-blue-700 dark:text-blue-300 min-w-[132px]">
+                <th className="md:sticky md:right-0 md:z-20 bg-slate-100 dark:bg-[#1A2234] border-l border-slate-200 dark:border-white/[0.08] px-3 sm:px-3.5 py-3 text-right text-xs font-semibold text-blue-700 dark:text-blue-300 min-w-[116px] sm:min-w-[132px]">
                   {t.matrix.colConsolidated} {activeYear}
                 </th>
               </tr>
@@ -1268,7 +1531,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                     {formatBRL(totals.incomeMonthly[m], privacyMode)}
                   </td>
                 ))}
-                <td className="sticky right-0 z-10 bg-emerald-100/80 dark:bg-[#122D26] border-l border-slate-200 dark:border-white/[0.08] px-3.5 py-2.5 text-right font-mono text-xs tabular-nums text-emerald-900 dark:text-emerald-200">
+                <td className="md:sticky md:right-0 md:z-10 bg-emerald-100/80 dark:bg-[#122D26] border-l border-slate-200 dark:border-white/[0.08] px-3 sm:px-3.5 py-2.5 text-right font-mono text-xs tabular-nums text-emerald-900 dark:text-emerald-200">
                   <div>{formatBRL(totals.incomeAnnual, privacyMode)}</div>
                   <div className="text-[10px] font-sans font-normal opacity-80">
                     {t.matrix.annualGainSub}
@@ -1308,7 +1571,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                     {formatBRL(totals.fixedMonthly[m], privacyMode)}
                   </td>
                 ))}
-                <td className="sticky right-0 z-10 bg-slate-200/70 dark:bg-[#1F293D] border-l border-slate-200 dark:border-white/[0.08] px-3.5 py-2.5 text-right font-mono text-xs tabular-nums text-slate-900 dark:text-white">
+                <td className="md:sticky md:right-0 md:z-10 bg-slate-200/70 dark:bg-[#1F293D] border-l border-slate-200 dark:border-white/[0.08] px-3 sm:px-3.5 py-2.5 text-right font-mono text-xs tabular-nums text-slate-900 dark:text-white">
                   {formatBRL(totals.fixedAnnual, privacyMode)}
                 </td>
               </tr>
@@ -1345,7 +1608,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                     {formatBRL(totals.variableMonthly[m], privacyMode)}
                   </td>
                 ))}
-                <td className="sticky right-0 z-10 bg-slate-200/70 dark:bg-[#1F293D] border-l border-slate-200 dark:border-white/[0.08] px-3.5 py-2.5 text-right font-mono text-xs tabular-nums text-slate-900 dark:text-white">
+                <td className="md:sticky md:right-0 md:z-10 bg-slate-200/70 dark:bg-[#1F293D] border-l border-slate-200 dark:border-white/[0.08] px-3 sm:px-3.5 py-2.5 text-right font-mono text-xs tabular-nums text-slate-900 dark:text-white">
                   {formatBRL(totals.variableAnnual, privacyMode)}
                 </td>
               </tr>
@@ -1363,7 +1626,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                     {formatBRL(totals.totalExpenseMonthly[m], privacyMode)}
                   </td>
                 ))}
-                <td className="sticky right-0 z-10 bg-slate-800 dark:bg-[#111827] border-l border-slate-700 dark:border-white/[0.1] px-3.5 py-2.5 text-right font-mono text-xs font-semibold tabular-nums text-white">
+                <td className="md:sticky md:right-0 md:z-10 bg-slate-800 dark:bg-[#111827] border-l border-slate-700 dark:border-white/[0.1] px-3 sm:px-3.5 py-2.5 text-right font-mono text-xs font-semibold tabular-nums text-white">
                   <div>{formatBRL(totals.totalExpenseAnnual, privacyMode)}</div>
                   <div className="text-[10px] font-sans font-normal text-slate-300">
                     {t.matrix.annualSpendSub}
@@ -1409,7 +1672,7 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                   );
                 })}
                 <td
-                  className={`sticky right-0 z-10 bg-slate-100 dark:bg-[#1A2234] border-l border-slate-200 dark:border-white/[0.08] px-3.5 py-3 text-right font-mono text-xs tabular-nums ${
+                  className={`md:sticky md:right-0 md:z-10 bg-slate-100 dark:bg-[#1A2234] border-l border-slate-200 dark:border-white/[0.08] px-3 sm:px-3.5 py-3 text-right font-mono text-xs tabular-nums ${
                     totals.resultAnnual >= 0
                       ? 'text-emerald-600 dark:text-emerald-400'
                       : 'text-red-600 dark:text-red-400'
@@ -1422,38 +1685,142 @@ export const MatrixGridView: React.FC<MatrixGridViewProps> = ({
                 </td>
               </tr>
 
-              {/* GUARDADO */}
+              {/* GUARDADO / CAIXINHA (100% personalizável como os demais blocos) */}
               {savingsRows.map((row) => {
                 const monthly = totals.rowMonthly[row.id] ?? Array(12).fill(0);
                 const annual = totals.rowAnnual[row.id] ?? 0;
+                const isEditingThis = editingRowId === row.id;
+                const visual = getCategoryVisual(row);
                 return (
-                  <tr
-                    key={row.id}
-                    className="group bg-blue-50/70 dark:bg-blue-950/20 hover:bg-blue-100/60 transition-colors"
-                  >
-                    <td className="sticky left-0 z-10 bg-blue-50 dark:bg-[#161922] border-r border-slate-200 dark:border-white/[0.08] px-3.5 py-3 text-xs font-semibold text-blue-700 dark:text-blue-300">
-                      <span className="inline-flex items-center gap-1.5">
-                        <Sparkles className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
-                        {row.name} ({t.matrix.reserveContribution})
-                      </span>
-                    </td>
-                    {visibleMonths.map((m) => (
-                      <td
-                        key={m}
-                        onClick={() => onSelectCell(row, m)}
-                        className="px-3 py-3 text-right font-mono text-xs font-semibold tabular-nums text-blue-700 dark:text-blue-300 cursor-pointer hover:bg-blue-100/70 border-r border-blue-200/40"
-                        title={monthNamesFull[m]}
-                      >
-                        {formatBRL(monthly[m] ?? 0, privacyMode)}
+                  <React.Fragment key={row.id}>
+                    <tr
+                      className={`group bg-blue-50/70 dark:bg-blue-950/20 hover:bg-blue-100/60 transition-colors ${
+                        row.hidden ? 'opacity-60' : ''
+                      }`}
+                    >
+                      <td className="sticky left-0 z-10 bg-blue-50 dark:bg-[#161922] border-r border-slate-200 dark:border-white/[0.08] px-3 py-3 text-xs font-semibold text-blue-700 dark:text-blue-300">
+                        {isEditingThis ? (
+                          <div className="flex items-center gap-1.5">
+                            <CategoryIconBadge row={row} size="xs" />
+                            <input
+                              type="text"
+                              value={editingRowName}
+                              onChange={(e) => setEditingRowName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  const clean = editingRowName.trim();
+                                  if (clean) onUpdateRow(row.id, { name: clean.toUpperCase() });
+                                  setEditingRowId(null);
+                                } else if (e.key === 'Escape') {
+                                  setEditingRowId(null);
+                                }
+                              }}
+                              className="flex-1 min-w-0 px-2 py-1 rounded text-xs bg-white dark:bg-[#0D1320] border border-blue-400 text-slate-900 dark:text-white"
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const clean = editingRowName.trim();
+                                if (clean) onUpdateRow(row.id, { name: clean.toUpperCase() });
+                                setEditingRowId(null);
+                              }}
+                              className="p-1 rounded bg-blue-600 text-white shrink-0"
+                            >
+                              <Check className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingRowId(null)}
+                              className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shrink-0"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="inline-flex items-center gap-2 min-w-0">
+                              <CategoryIconBadge row={row} size="xs" />
+                              <span className="truncate">
+                                {row.name} ({t.matrix.reserveContribution})
+                              </span>
+                            </span>
+                            <div
+                              className={`flex items-center gap-0.5 shrink-0 transition-opacity ${
+                                customizeGridMode
+                                  ? 'opacity-100'
+                                  : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingRowId(row.id);
+                                  setEditingRowName(row.name);
+                                }}
+                                className="p-1 rounded hover:bg-blue-200/60 dark:hover:bg-white/10 text-blue-500"
+                                title="Editar nome, cor ou ícone"
+                              >
+                                <Pencil className="h-3 w-3" />
+                              </button>
+                              {customizeGridMode && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleHideRow(row.id)}
+                                    className="p-1 rounded hover:bg-blue-200/60 dark:hover:bg-white/10 text-blue-500"
+                                    title={row.hidden ? 'Mostrar linha' : t.matrix.hideRow}
+                                  >
+                                    {row.hidden ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onDeleteRow(row.id)}
+                                    className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-500"
+                                    title="Excluir linha"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </td>
-                    ))}
-                    <td className="sticky right-0 z-10 bg-blue-100/80 dark:bg-[#1E212B] border-l border-slate-200 dark:border-white/[0.08] px-3.5 py-3 text-right font-mono text-xs font-semibold tabular-nums text-blue-800 dark:text-blue-300">
-                      <div>{formatBRL(annual, privacyMode)}</div>
-                      <div className="text-[10px] font-sans font-normal opacity-80">
-                        {t.matrix.totalValueSub}
-                      </div>
-                    </td>
-                  </tr>
+                      {visibleMonths.map((m) => (
+                        <td
+                          key={m}
+                          onClick={() => onSelectCell(row, m)}
+                          className="px-3 py-3 text-right font-mono text-xs font-semibold tabular-nums text-blue-700 dark:text-blue-300 cursor-pointer hover:bg-blue-100/70 border-r border-blue-200/40"
+                          title={monthNamesFull[m]}
+                        >
+                          {formatBRL(monthly[m] ?? 0, privacyMode)}
+                        </td>
+                      ))}
+                      <td className="md:sticky md:right-0 md:z-10 bg-blue-100/80 dark:bg-[#1E212B] border-l border-slate-200 dark:border-white/[0.08] px-3 sm:px-3.5 py-3 text-right font-mono text-xs font-semibold tabular-nums text-blue-800 dark:text-blue-300">
+                        <div>{formatBRL(annual, privacyMode)}</div>
+                        <div className="text-[10px] font-sans font-normal opacity-80">
+                          {t.matrix.totalValueSub}
+                        </div>
+                      </td>
+                    </tr>
+                    {isEditingThis && (
+                      <tr className="bg-slate-50 dark:bg-[#0D1320] border-b border-blue-200 dark:border-blue-500/30">
+                        <td colSpan={visibleMonths.length + 2} className="px-4 py-3">
+                          <div className="max-w-xl">
+                            <CategoryVisualPicker
+                              color={visual.color}
+                              icon={visual.iconKey}
+                              onChangeColor={(nextColor) => onUpdateRow(row.id, { color: nextColor })}
+                              onChangeIcon={(nextIcon) => onUpdateRow(row.id, { icon: nextIcon })}
+                              compact
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
             </tbody>

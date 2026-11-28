@@ -125,16 +125,28 @@ function buildCsvContent(headers: string[], rows: Array<Array<string | number>>)
   return '\uFEFF' + lines.join('\r\n');
 }
 
-function triggerBlobDownload(blob: Blob, filename: string): void {
+function triggerBlobDownload(blob: Blob, filename: string): { inIframe: boolean } {
+  if (!(blob instanceof Blob) || blob.size === 0) {
+    throw new Error('Não foi possível gerar o arquivo: conteúdo vazio.');
+  }
+  const inIframe = typeof window !== 'undefined' && window.self !== window.top;
   const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.rel = 'noopener noreferrer';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+  try {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.rel = 'noopener noreferrer';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return { inIframe };
+  } catch {
+    URL.revokeObjectURL(url);
+    throw new Error('Falha ao iniciar o download do arquivo no navegador.');
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(url), 15000);
+  }
 }
 
 function applyWorksheetFormatting(
@@ -341,7 +353,7 @@ export function exportFinancialReport(options: ExportReportOptions): ExportRepor
   } else if (scope === 'monthly_summary') {
     sheetName = 'Resumo Mensal';
     if (period === 'month') {
-      headers = ['Bloco', 'Categoria', 'Dia Ref.', `Realizado (${monthShorts[focusMonth]})`, 'Média Mensal (R$)', 'Limite/Teto (R$)', 'Total Anual (R$)'];
+      headers = ['Bloco', 'Categoria', `Realizado (${monthShorts[focusMonth]})`, 'Média Mensal (R$)', 'Limite/Teto (R$)', 'Total Anual (R$)'];
       const visibleRows = state.rows
         .filter((r) => !r.hidden)
         .sort((a, b) => a.block.localeCompare(b.block) || a.order - b.order);
@@ -349,21 +361,20 @@ export function exportFinancialReport(options: ExportReportOptions): ExportRepor
       dataRows = visibleRows.map((r) => [
         blockToLabelPt(r.block),
         r.name,
-        r.refDay ?? '',
         Number((totals.rowMonthly[r.id]?.[focusMonth] ?? 0).toFixed(2)),
         Number((totals.rowAverage[r.id] ?? 0).toFixed(2)),
         r.alertLimit ? Number(r.alertLimit.toFixed(2)) : '',
         Number((totals.rowAnnual[r.id] ?? 0).toFixed(2)),
       ]);
       dataRows.push(
-        ['CONSOLIDADO', 'TOTAL RECEITAS', '', Number((totals.incomeMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.incomeAnnual.toFixed(2))],
-        ['CONSOLIDADO', 'TOTAL DESPESAS FIXAS', '', Number((totals.fixedMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.fixedAnnual.toFixed(2))],
-        ['CONSOLIDADO', 'TOTAL DESPESAS VARIÁVEIS', '', Number((totals.variableMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.variableAnnual.toFixed(2))],
-        ['CONSOLIDADO', 'TOTAL DE GASTOS', '', Number((totals.totalExpenseMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.totalExpenseAnnual.toFixed(2))],
-        ['CONSOLIDADO', 'RESULTADO LÍQUIDO', '', Number((totals.resultMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.resultAnnual.toFixed(2))],
-        ['CONSOLIDADO', 'RESERVA / GUARDADO', '', Number((totals.savingsMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.savingsAnnual.toFixed(2))]
+        ['CONSOLIDADO', 'TOTAL RECEITAS', Number((totals.incomeMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.incomeAnnual.toFixed(2))],
+        ['CONSOLIDADO', 'TOTAL DESPESAS FIXAS', Number((totals.fixedMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.fixedAnnual.toFixed(2))],
+        ['CONSOLIDADO', 'TOTAL DESPESAS VARIÁVEIS', Number((totals.variableMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.variableAnnual.toFixed(2))],
+        ['CONSOLIDADO', 'TOTAL DE GASTOS', Number((totals.totalExpenseMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.totalExpenseAnnual.toFixed(2))],
+        ['CONSOLIDADO', 'RESULTADO LÍQUIDO', Number((totals.resultMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.resultAnnual.toFixed(2))],
+        ['CONSOLIDADO', 'RESERVA / GUARDADO', Number((totals.savingsMonthly[focusMonth] ?? 0).toFixed(2)), '', '', Number(totals.savingsAnnual.toFixed(2))]
       );
-      currencyCols = [3, 4, 5, 6];
+      currencyCols = [2, 3, 4, 5];
     } else {
       headers = ['Bloco', 'Categoria', ...monthShorts, 'Total Anual (R$)', 'Média Mensal (R$)'];
       const visibleRows = state.rows
@@ -537,7 +548,7 @@ export function downloadImportTemplate(
   format: ReportFormat,
   rows: CategoryRow[],
   activeYear: number
-): string {
+): { filename: string; inIframe: boolean } {
   const sampleRows: Array<Array<string | number>> = [
     [
       `08/11/${activeYear}`,
@@ -585,8 +596,8 @@ export function downloadImportTemplate(
   if (format === 'csv') {
     const csv = buildCsvContent(TEMPLATE_HEADERS, sampleRows);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    triggerBlobDownload(blob, filename);
-    return filename;
+    const { inIframe } = triggerBlobDownload(blob, filename);
+    return { filename, inIframe };
   }
 
   const wb = XLSX.utils.book_new();
@@ -608,10 +619,10 @@ export function downloadImportTemplate(
     ['Status', 'Opcional (padrão Pago)', 'Pago | Pendente | Projetado', 'Pendente'],
     ['Observações', 'Opcional', 'Anotações livres', 'Vencimento dia 15'],
     ['', '', '', ''],
-    ['CATEGORIAS ATIVAS NO APP', 'BLOCO', 'DIA REF.', ''],
+    ['CATEGORIAS ATIVAS NO APP', 'BLOCO', 'LIMITE (R$)', ''],
     ...rows
       .filter((r) => !r.hidden)
-      .map((r) => [r.name, blockToLabelPt(r.block), r.refDay ? String(r.refDay) : '', '']),
+      .map((r) => [r.name, blockToLabelPt(r.block), r.alertLimit ? String(r.alertLimit) : '', '']),
   ];
   const guideWs = XLSX.utils.aoa_to_sheet([guideHeaders, ...guideRows]);
   applyWorksheetFormatting(guideWs, guideHeaders, guideRows);
@@ -621,8 +632,8 @@ export function downloadImportTemplate(
   const blob = new Blob([wbOut], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
-  triggerBlobDownload(blob, filename);
-  return filename;
+  const { inIframe } = triggerBlobDownload(blob, filename);
+  return { filename, inIframe };
 }
 
 // ==================== IMPORT PARSER & VALIDATOR ====================
@@ -737,13 +748,13 @@ function parseFlexibleDate(
     const year = raw.getFullYear();
     const month = raw.getMonth();
     const day = raw.getDate();
-    if (year < 2000 || year > 2100) return null;
+    if (year < 1900 || year > 9999) return null;
     return { year, month, day, formatted: formatDateBR(year, month, day) };
   }
 
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 20000 && raw < 80000) {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 1 && raw < 300000) {
     const parsed = XLSX.SSF.parse_date_code(raw);
-    if (parsed && parsed.y >= 2000 && parsed.y <= 2100) {
+    if (parsed && parsed.y >= 1900 && parsed.y <= 9999) {
       const month = parsed.m - 1;
       return {
         year: parsed.y,
@@ -763,7 +774,7 @@ function parseFlexibleDate(
     const year = parseInt(isoMatch[1], 10);
     const month = parseInt(isoMatch[2], 10) - 1;
     const day = parseInt(isoMatch[3], 10);
-    if (year >= 2000 && year <= 2100 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+    if (year >= 1900 && year <= 9999 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
       return { year, month, day, formatted: formatDateBR(year, month, day) };
     }
     return null;
@@ -776,7 +787,7 @@ function parseFlexibleDate(
     const month = parseInt(brMatch[2], 10) - 1;
     let year = parseInt(brMatch[3], 10);
     if (year < 100) year += 2000;
-    if (year >= 2000 && year <= 2100 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+    if (year >= 1900 && year <= 9999 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
       const check = new Date(year, month, day);
       if (check.getFullYear() === year && check.getMonth() === month && check.getDate() === day) {
         return { year, month, day, formatted: formatDateBR(year, month, day) };

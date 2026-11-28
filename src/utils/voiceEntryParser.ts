@@ -9,8 +9,10 @@ export interface ParsedVoiceEntry {
   isBoleto?: boolean;
   day: number;
   month: number;
+  year: number;
   foundExplicitDay: boolean;
   foundExplicitMonth: boolean;
+  foundExplicitYear: boolean;
   status: EntryStatus;
   hasExplicitStatusHint: boolean;
   matchedRowId: string | null;
@@ -208,15 +210,40 @@ function parseCentsPart(normText: string): number {
   return 0;
 }
 
+const SPOKEN_DAY_REGEX_PART =
+  '(?:primeiro|um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|quatorze|catorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte(?:\\s+e\\s+(?:um|dois|tres|quatro|cinco|seis|sete|oito|nove))?|trinta(?:\\s+e\\s+um)?)';
+
+const MONTH_WORDS_REGEX_PART =
+  '(?:janeiro|jan|fevereiro|fev|marco|mar|abril|abr|maio|mai|junho|jun|julho|jul|agosto|ago|setembro|set|outubro|out|novembro|nov|dezembro|dez)';
+
+function parseSpokenDayNumber(phrase: string): number | null {
+  const norm = normalizeText(phrase);
+  if (norm === 'primeiro') return 1;
+  const num = parsePortugueseNumberWords(norm);
+  if (num !== null && num >= 1 && num <= 31) return Math.trunc(num);
+  return null;
+}
+
 function stripNonCurrencyTokensForAmount(norm: string): string {
   return norm
     .replace(
-      /\bdia\s+\d{1,2}(?:\s+de\s+(?:janeiro|jan|fevereiro|fev|marco|mar|abril|abr|maio|mai|junho|jun|julho|jul|agosto|ago|setembro|set|outubro|out|novembro|nov|dezembro|dez))?\b/gi,
+      new RegExp(
+        `\\bdia\\s+(?:\\d{1,2}|${SPOKEN_DAY_REGEX_PART})(?:\\s+de\\s+${MONTH_WORDS_REGEX_PART}(?:\\s+de\\s+\\d{4})?)?\\b`,
+        'gi'
+      ),
       ' '
     )
+    .replace(
+      new RegExp(
+        `\\b(?:\\d{1,2}|${SPOKEN_DAY_REGEX_PART})\\s+de\\s+${MONTH_WORDS_REGEX_PART}(?:\\s+de\\s+\\d{4})?\\b`,
+        'gi'
+      ),
+      ' '
+    )
+    .replace(/\bde\s+(?:19|20|21)\d{2}\b/gi, ' ')
     .replace(/\b\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/gi, ' ')
     .replace(/\bparcela\s*\d{1,2}\s*(?:\/|de)\s*\d{1,2}\b/gi, ' ')
-    .replace(/\b\d{1,2}\s*(?:x|vezes|parcelas?)\b/gi, ' ')
+    .replace(/\b(?:em\s+)?(?:\d{1,2}|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s*(?:x|vezes|parcelas?)\b/gi, ' ')
     // Prevent alphanumeric codes like "2PB", "4G", "3D" from looking like currency values
     .replace(/\b\d+[a-z]+\b/gi, ' ')
     .replace(/\b[a-z]+\d+\b/gi, ' ');
@@ -226,10 +253,9 @@ function parseAmountFromVoice(raw: string): number | null {
   const norm = normalizeText(raw);
   const cleaned = stripNonCurrencyTokensForAmount(norm);
 
-  // 1. Numeric reais + optional spoken/numeric centavos:
-  //    "150 reais e 50 centavos", "1.250,50", "R$ 706,00", "50 reais"
+  // 1. Numeric reais + optional spoken/numeric centavos (e.g., "150 reais e 50 centavos" or "89 reais e 90")
   const reaisPlusCents = cleaned.match(
-    /(\d{1,3}(?:\.\d{3})*|\d+)\s*(?:reais|real|conto|contos)\s+e\s+(\d{1,2}|[a-z]+(?:\s+e\s+[a-z]+)?)\s*centavos?/i
+    /(\d{1,3}(?:\.\d{3})*|\d+)\s*(?:reais|real|conto|contos)\s+e\s+(\d{1,2}|[a-z]+(?:\s+e\s+[a-z]+)?)(?:\s*centavos?)?(?!\s*(?:de|x|vezes|parcelas?))\b/i
   );
   if (reaisPlusCents) {
     const base = parseBrazilianNumericToken(reaisPlusCents[1]);
@@ -241,6 +267,18 @@ function parseAmountFromVoice(raw: string): number | null {
       if (centsNum !== null && centsNum >= 0 && centsNum < 100) {
         return Number((base + centsNum / 100).toFixed(2));
       }
+    }
+  }
+
+  // 1b. "49 e 90" or "120 e 50" (implicit reais + 2-digit centavos)
+  const implicitCents = cleaned.match(
+    /\b(\d{1,5})\s+e\s+(\d{2})(?:\s*(?:reais|real|centavos?))?(?!\s*(?:de\s+[a-z]+|x|vezes|parcelas?))\b/i
+  );
+  if (implicitCents) {
+    const base = parseBrazilianNumericToken(implicitCents[1]);
+    const centsNum = parseInt(implicitCents[2], 10);
+    if (base !== null && centsNum >= 0 && centsNum < 100) {
+      return Number((base + centsNum / 100).toFixed(2));
     }
   }
 
@@ -262,9 +300,9 @@ function parseAmountFromVoice(raw: string): number | null {
     }
   }
 
-  // 3. Spoken compound Portuguese numbers before "reais" / "real" (+ optional "e XX centavos")
+  // 3. Spoken compound Portuguese numbers before "reais" / "real" (+ optional "e XX [centavos]")
   const spokenPhraseMatch = cleaned.match(
-    /\b([a-z\s]+?)\s*(?:reais|real|conto|contos)\b(?:\s+e\s+((?:\d{1,2}|[a-z\s]+?)\s*centavos?))?/
+    /\b([a-z\s]+?)\s*(?:reais|real|conto|contos)\b(?:\s+e\s+(\d{1,2}|[a-z]+(?:\s+e\s+[a-z]+)?)(?:\s*centavos?)?)?/
   );
   if (spokenPhraseMatch) {
     const words = spokenPhraseMatch[1].trim().split(/\s+/);
@@ -279,7 +317,18 @@ function parseAmountFromVoice(raw: string): number | null {
     }
     const base = parsePortugueseNumberWords(collected.join(' '));
     if (base !== null) {
-      const extraCents = spokenPhraseMatch[2] ? parseCentsPart(spokenPhraseMatch[2]) : 0;
+      let extraCents = 0;
+      if (spokenPhraseMatch[2]) {
+        const rawC = spokenPhraseMatch[2].trim();
+        if (/^\d{1,2}$/.test(rawC)) {
+          extraCents = parseInt(rawC, 10) / 100;
+        } else {
+          const parsedC = parsePortugueseNumberWords(rawC);
+          if (parsedC !== null && parsedC > 0 && parsedC < 100) {
+            extraCents = parsedC / 100;
+          }
+        }
+      }
       return Number((base + extraCents).toFixed(2));
     }
   }
@@ -306,39 +355,112 @@ function parseAmountFromVoice(raw: string): number | null {
 function parseDayAndMonth(
   raw: string,
   defaultMonth: number,
+  defaultYear: number,
   referenceDate: Date
-): { day: number; month: number; foundExplicitDay: boolean; foundExplicitMonth: boolean } {
+): {
+  day: number;
+  month: number;
+  year: number;
+  foundExplicitDay: boolean;
+  foundExplicitMonth: boolean;
+  foundExplicitYear: boolean;
+} {
   const norm = normalizeText(raw);
   const currentDay = referenceDate.getDate();
 
-  // "14/05" or "14/05/2026"
-  const slashDate = norm.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*\d{2,4})?\b/);
+  // "14/05", "01/01/2027", "01/01/28"
+  const slashDate = norm.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?\b/);
   if (slashDate) {
     const d = parseInt(slashDate[1], 10);
     const m = parseInt(slashDate[2], 10) - 1;
+    let y = defaultYear;
+    let foundExplicitYear = false;
+    if (slashDate[3]) {
+      let parsedY = parseInt(slashDate[3], 10);
+      if (parsedY < 100) parsedY += 2000;
+      if (parsedY >= 1900 && parsedY <= 9999) {
+        y = parsedY;
+        foundExplicitYear = true;
+      }
+    }
     if (d >= 1 && d <= 31 && m >= 0 && m <= 11) {
-      return { day: d, month: m, foundExplicitDay: true, foundExplicitMonth: true };
+      return {
+        day: d,
+        month: m,
+        year: y,
+        foundExplicitDay: true,
+        foundExplicitMonth: true,
+        foundExplicitYear,
+      };
     }
   }
 
-  // "dia 14 de maio" or "14 de maio"
+  // "dia 14 de maio de 2027", "dia primeiro de janeiro de 2028", "quinze de novembro"
   const dayMonthName = norm.match(
-    /\b(?:dia\s+)?(\d{1,2})\s+de\s+(janeiro|jan|fevereiro|fev|marco|mar|abril|abr|maio|mai|junho|jun|julho|jul|agosto|ago|setembro|set|outubro|out|novembro|nov|dezembro|dez)\b/
+    new RegExp(
+      `\\b(?:dia\\s+)?(\\d{1,2}|${SPOKEN_DAY_REGEX_PART})\\s+de\\s+(${MONTH_WORDS_REGEX_PART})(?:\\s+de\\s+(\\d{4}))?\\b`
+    )
   );
   if (dayMonthName) {
-    const d = parseInt(dayMonthName[1], 10);
+    const d = /^\d+$/.test(dayMonthName[1])
+      ? parseInt(dayMonthName[1], 10)
+      : parseSpokenDayNumber(dayMonthName[1]);
     const m = MONTH_NAME_MAP[dayMonthName[2]];
-    if (d >= 1 && d <= 31 && m !== undefined) {
-      return { day: d, month: m, foundExplicitDay: true, foundExplicitMonth: true };
+    let y = defaultYear;
+    let foundExplicitYear = false;
+    if (dayMonthName[3]) {
+      const parsedY = parseInt(dayMonthName[3], 10);
+      if (parsedY >= 1900 && parsedY <= 9999) {
+        y = parsedY;
+        foundExplicitYear = true;
+      }
+    }
+    if (d !== null && d >= 1 && d <= 31 && m !== undefined) {
+      return {
+        day: d,
+        month: m,
+        year: y,
+        foundExplicitDay: true,
+        foundExplicitMonth: true,
+        foundExplicitYear,
+      };
     }
   }
 
-  // "dia 14"
-  const dayMatch = norm.match(/\bdia\s+(\d{1,2})\b/);
+  // "dia 14" or spoken "dia quinze" / "dia primeiro"
+  const dayMatch = norm.match(new RegExp(`\\bdia\\s+(\\d{1,2}|${SPOKEN_DAY_REGEX_PART})\\b`));
   if (dayMatch) {
-    const d = parseInt(dayMatch[1], 10);
-    if (d >= 1 && d <= 31) {
-      return { day: d, month: defaultMonth, foundExplicitDay: true, foundExplicitMonth: false };
+    const d = /^\d+$/.test(dayMatch[1])
+      ? parseInt(dayMatch[1], 10)
+      : parseSpokenDayNumber(dayMatch[1]);
+    if (d !== null && d >= 1 && d <= 31) {
+      return {
+        day: d,
+        month: defaultMonth,
+        year: defaultYear,
+        foundExplicitDay: true,
+        foundExplicitMonth: false,
+        foundExplicitYear: false,
+      };
+    }
+  }
+
+  // Explicit month + year without day (e.g. "em janeiro de 2027")
+  const monthYearOnly = norm.match(
+    new RegExp(`\\b(${MONTH_WORDS_REGEX_PART})(?:\\s+de\\s+(\\d{4}))?\\b`)
+  );
+  if (monthYearOnly && monthYearOnly[2]) {
+    const m = MONTH_NAME_MAP[monthYearOnly[1]];
+    const y = parseInt(monthYearOnly[2], 10);
+    if (m !== undefined && y >= 1900 && y <= 9999) {
+      return {
+        day: currentDay,
+        month: m,
+        year: y,
+        foundExplicitDay: false,
+        foundExplicitMonth: true,
+        foundExplicitYear: true,
+      };
     }
   }
 
@@ -346,8 +468,23 @@ function parseDayAndMonth(
     return {
       day: referenceDate.getDate(),
       month: referenceDate.getMonth(),
+      year: referenceDate.getFullYear(),
       foundExplicitDay: true,
       foundExplicitMonth: true,
+      foundExplicitYear: true,
+    };
+  }
+
+  if (/\banteontem\b/.test(norm)) {
+    const dayBefore = new Date(referenceDate);
+    dayBefore.setDate(dayBefore.getDate() - 2);
+    return {
+      day: dayBefore.getDate(),
+      month: dayBefore.getMonth(),
+      year: dayBefore.getFullYear(),
+      foundExplicitDay: true,
+      foundExplicitMonth: true,
+      foundExplicitYear: true,
     };
   }
 
@@ -357,8 +494,10 @@ function parseDayAndMonth(
     return {
       day: yesterday.getDate(),
       month: yesterday.getMonth(),
+      year: yesterday.getFullYear(),
       foundExplicitDay: true,
       foundExplicitMonth: true,
+      foundExplicitYear: true,
     };
   }
 
@@ -368,16 +507,20 @@ function parseDayAndMonth(
     return {
       day: tomorrow.getDate(),
       month: tomorrow.getMonth(),
+      year: tomorrow.getFullYear(),
       foundExplicitDay: true,
       foundExplicitMonth: true,
+      foundExplicitYear: true,
     };
   }
 
   return {
     day: currentDay,
     month: defaultMonth,
+    year: defaultYear,
     foundExplicitDay: false,
     foundExplicitMonth: false,
+    foundExplicitYear: false,
   };
 }
 
@@ -392,7 +535,11 @@ function parsePaymentMethod(
   if (/\b(?:debito|no debito|cartao de debito|passado no debito)\b/.test(norm)) {
     return { paymentMethod: 'debit', hasExplicitPaymentMethod: true, isBoleto: false };
   }
-  if (/\b(?:credito|no credito|cartao de credito|fatura|parcelado|parcelada|\d+\s*x|\d+\s*vezes)\b/.test(norm)) {
+  if (
+    /\b(?:credito|no credito|cartao de credito|fatura|parcelado|parcelada|\d+\s*x|\d+\s*vezes|(?:duas|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s*(?:vezes|parcelas?))\b/.test(
+      norm
+    )
+  ) {
     return { paymentMethod: 'credit', hasExplicitPaymentMethod: true, isBoleto: false };
   }
   if (/\b(?:dinheiro|em dinheiro|especie|em especie|em maos)\b/.test(norm)) {
@@ -422,10 +569,17 @@ function parseInstallments(raw: string): { current?: number; total?: number } {
     const tot = Math.min(48, Math.max(cur, parseInt(ratioMatch[2], 10)));
     return { current: cur, total: tot };
   }
-  const timesMatch = norm.match(/\b(?:em\s+)?(\d{1,2})\s*(?:x|vezes|parcelas?)\b/);
+  const timesMatch = norm.match(
+    /\b(?:em\s+)?(\d{1,2}|duas|dois|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s*(?:x|vezes|parcelas?)\b/
+  );
   if (timesMatch) {
-    const tot = Math.min(48, Math.max(2, parseInt(timesMatch[1], 10)));
-    return { current: 1, total: tot };
+    const parsedNum = /^\d+$/.test(timesMatch[1])
+      ? parseInt(timesMatch[1], 10)
+      : parsePortugueseNumberWords(timesMatch[1]);
+    if (parsedNum && parsedNum >= 2) {
+      const tot = Math.min(48, Math.trunc(parsedNum));
+      return { current: 1, total: tot };
+    }
   }
   return {};
 }
@@ -629,15 +783,20 @@ function capitalizeSentenceFragment(text: string): string {
 
 function stripNoiseForDescription(text: string): string {
   return text
-    .replace(/\b(?:r\$\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?\s*(?:reais|real|conto|contos|brl)?\b/gi, ' ')
+    .replace(/\b(?:r\$\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?(?:\s+e\s+\d{1,2})?\s*(?:reais|real|conto|contos|brl|centavos?)?\b/gi, ' ')
+    .replace(/\b(?:e\s+)?\d{1,2}\s*centavos?\b/gi, ' ')
     .replace(/\b(?:no|na|via|em|com)\s+(?:pix|d[eé]bito|cr[eé]dito|dinheiro|esp[eé]cie|transfer[êe]ncia)\b/gi, ' ')
     .replace(/\b(?:cart[aã]o\s+de\s+(?:d[eé]bito|cr[eé]dito))\b/gi, ' ')
     .replace(
-      /\bdia\s+\d{1,2}(?:\s+de\s+(?:janeiro|jan|fevereiro|fev|mar[çc]o|mar|abril|abr|maio|mai|junho|jun|julho|jul|agosto|ago|setembro|set|outubro|out|novembro|nov|dezembro|dez))?\b/gi,
+      /\b(?:em\s+)?(?:\d{1,2}|duas|dois|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)\s*(?:x|vezes|parcelas?)\b/gi,
+      ' '
+    )
+    .replace(
+      /\bdia\s+(?:\d{1,2}|primeiro|um|uma|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|quatorze|catorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte(?:\s+e\s+\w+)?|trinta(?:\s+e\s+um)?)(?:\s+de\s+(?:janeiro|jan|fevereiro|fev|mar[çc]o|mar|abril|abr|maio|mai|junho|jun|julho|jul|agosto|ago|setembro|set|outubro|out|novembro|nov|dezembro|dez)(?:\s+de\s+\d{4})?)?\b/gi,
       ' '
     )
     .replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/gi, ' ')
-    .replace(/\b(?:hoje|ontem|amanh[ãa])\b/gi, ' ')
+    .replace(/\b(?:hoje|ontem|anteontem|amanh[ãa])\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -766,18 +925,17 @@ export function parseVoiceTransaction(
   transcript: string,
   rows: CategoryRow[],
   focusMonth: number,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  defaultYear: number = referenceDate.getFullYear()
 ): ParsedVoiceEntry {
   const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  const safeYear = Number.isFinite(defaultYear) ? Math.trunc(defaultYear) : referenceDate.getFullYear();
   const raw = transcript.trim();
   const amount = parseAmountFromVoice(raw);
   const { flowType, status, hasExplicitStatusHint } = parseFlowAndStatus(raw);
   const { paymentMethod, hasExplicitPaymentMethod, isBoleto } = parsePaymentMethod(raw, flowType);
-  const { day, month, foundExplicitDay, foundExplicitMonth } = parseDayAndMonth(
-    raw,
-    safeMonth,
-    referenceDate
-  );
+  const { day, month, year, foundExplicitDay, foundExplicitMonth, foundExplicitYear } =
+    parseDayAndMonth(raw, safeMonth, safeYear, referenceDate);
   const inst = parseInstallments(raw);
   const matchedRow = matchCategoryRow(raw, rows, flowType, day);
   const { merchant, description } = extractMerchantAndDescription(raw, matchedRow, flowType);
@@ -798,7 +956,13 @@ export function parseVoiceTransaction(
       ? 'Dinheiro'
       : 'Transferência'
   );
-  if (foundExplicitDay) hints.push(`Dia ${String(day).padStart(2, '0')}`);
+  if (foundExplicitDay || foundExplicitYear) {
+    hints.push(
+      foundExplicitYear
+        ? `${String(day).padStart(2, '0')}/${String(month + 1).padStart(2, '0')}/${year}`
+        : `Dia ${String(day).padStart(2, '0')}`
+    );
+  }
   hints.push(
     status === 'paid'
       ? flowType === 'income'
@@ -818,8 +982,10 @@ export function parseVoiceTransaction(
     isBoleto,
     day,
     month,
+    year,
     foundExplicitDay,
     foundExplicitMonth,
+    foundExplicitYear,
     status,
     hasExplicitStatusHint,
     matchedRowId: matchedRow?.id ?? null,

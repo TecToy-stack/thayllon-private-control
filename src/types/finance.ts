@@ -48,6 +48,8 @@ export interface CategoryRow {
   id: string;
   block: BlockType;
   name: string;
+  color?: string;
+  icon?: string;
   refDay?: number;
   order: number;
   hidden?: boolean;

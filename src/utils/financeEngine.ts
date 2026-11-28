@@ -17,7 +17,10 @@ import {
   TransactionEntry,
 } from '../types/finance';
 import { MONTH_NAMES_SHORT } from '../data/initialData';
-import { computeAllCreditCardsOverview } from './creditCardsEngine';
+import {
+  computeAllCreditCardsOverview,
+  expandPurchaseIntoSlices,
+} from './creditCardsEngine';
 
 export interface InstallmentParsedInfo {
   isInstallment: boolean;
@@ -1200,9 +1203,11 @@ export function computeCategoryLimitProgress(
 
 export interface InstallmentTrackerItem {
   id: string;
+  source: 'entry' | 'card';
   title: string;
   categoryName: string;
   rowId: string;
+  cardId?: string;
   accountLabel: string;
   year: number;
   month: number;
@@ -1238,13 +1243,19 @@ export function computeInstallmentsSummary(
   rows: CategoryRow[],
   accounts: BankAccount[],
   activeYear: number,
-  focusMonth: number
+  focusMonth: number,
+  creditCards: CreditCardAccount[] = [],
+  cardPurchases: CreditCardPurchase[] = [],
+  paidCardInvoices: Record<string, boolean> = {}
 ): InstallmentsSummary {
   const rowMap = new Map(rows.map((r) => [r.id, r]));
   const accMap = new Map(accounts.map((a) => [a.id, a]));
+  const cardMap = new Map(creditCards.map((c) => [c.id, c]));
   const safeFocusMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  const focusAbs = Math.trunc(activeYear) * 12 + safeFocusMonth;
 
   const items: InstallmentTrackerItem[] = [];
+  const cardUpcomingSlices: { year: number; month: number; amount: number }[] = [];
 
   entries.forEach((entry) => {
     if (isDeduplicatedEntry(entry)) return;
@@ -1256,6 +1267,7 @@ export function computeInstallmentsSummary(
 
     items.push({
       id: entry.id,
+      source: 'entry',
       title: entry.merchant || entry.description,
       categoryName: row?.name ?? 'Geral',
       rowId: entry.rowId,
@@ -1269,6 +1281,59 @@ export function computeInstallmentsSummary(
       installmentAmount: inst.installmentAmount,
       remainingTotalAmount: inst.remainingTotalAmount,
       shortLabel: inst.shortLabel,
+    });
+  });
+
+  cardPurchases.forEach((purchase) => {
+    if (purchase.installments <= 1) return;
+    const card = cardMap.get(purchase.cardId);
+    if (!card) return;
+    const slices = expandPurchaseIntoSlices(purchase, card, paidCardInvoices);
+    const unpaidSlices = slices.filter((s) => !s.isPaid);
+    if (unpaidSlices.length === 0) return;
+
+    const futureAfterFocus = unpaidSlices.filter(
+      (s) => s.billYear * 12 + s.billMonth > focusAbs
+    );
+    const activeFromFocus = unpaidSlices.filter(
+      (s) => s.billYear * 12 + s.billMonth >= focusAbs
+    );
+    if (activeFromFocus.length === 0) return;
+
+    futureAfterFocus.forEach((s) => {
+      cardUpcomingSlices.push({ year: s.billYear, month: s.billMonth, amount: s.amount });
+    });
+
+    const elapsedOrCurrentCount = Math.min(
+      purchase.installments,
+      Math.max(1, purchase.installments - futureAfterFocus.length)
+    );
+    const remainingTotalAmount = Number(
+      futureAfterFocus.reduce((sum, s) => sum + s.amount, 0).toFixed(2)
+    );
+    const firstSlice = slices[0];
+    const parts = String(purchase.purchaseDate || '').split('-');
+    const pYear = Number(parts[0]) || activeYear;
+    const pMonth = Number(parts[1]) ? Number(parts[1]) - 1 : safeFocusMonth;
+    const pDay = Number(parts[2]) || 15;
+
+    items.push({
+      id: `card-pur-${purchase.id}`,
+      source: 'card',
+      title: purchase.description,
+      categoryName: purchase.category || 'Cartão de Crédito',
+      rowId: '',
+      cardId: card.id,
+      accountLabel: card.nickname ? `${card.bankName} · ${card.nickname}` : card.bankName,
+      year: pYear,
+      month: Math.min(11, Math.max(0, pMonth)),
+      day: Math.min(31, Math.max(1, pDay)),
+      current: elapsedOrCurrentCount,
+      total: purchase.installments,
+      remainingCount: futureAfterFocus.length,
+      installmentAmount: firstSlice ? firstSlice.amount : Number((purchase.totalAmount / purchase.installments).toFixed(2)),
+      remainingTotalAmount,
+      shortLabel: `${elapsedOrCurrentCount}/${purchase.installments}`,
     });
   });
 
@@ -1290,10 +1355,18 @@ export function computeInstallmentsSummary(
     let count = 0;
 
     items.forEach((item) => {
+      if (item.source !== 'entry') return;
       const startAbs = item.year * 12 + item.month;
       const diff = absMonth - startAbs;
       if (diff >= 1 && diff <= item.remainingCount) {
         amount += item.installmentAmount;
+        count += 1;
+      }
+    });
+
+    cardUpcomingSlices.forEach((sl) => {
+      if (sl.year === targetYear && sl.month === targetMonth) {
+        amount += sl.amount;
         count += 1;
       }
     });
@@ -1307,7 +1380,7 @@ export function computeInstallmentsSummary(
     };
   });
 
-  const activeItems = items.filter((it) => it.remainingCount > 0);
+  const activeItems = items.filter((it) => it.remainingCount > 0 || it.source === 'card');
   const totalPaidInstallments = items.reduce((s, it) => s + it.current, 0);
   const totalRemainingInstallments = items.reduce((s, it) => s + it.remainingCount, 0);
   const totalRemainingAmount = Number(
@@ -1379,17 +1452,79 @@ export function getEffectiveRecurringStatus(
   return { status: 'pending', isDueSoon: false, daysUntilDue: null };
 }
 
+export function shiftYearMonth(
+  year: number,
+  month: number,
+  deltaMonths: number
+): { year: number; month: number } {
+  const safeYear = Number.isFinite(year) ? Math.trunc(year) : new Date().getFullYear();
+  const safeMonth = Number.isFinite(month) ? Math.trunc(month) : 0;
+  const total = safeYear * 12 + safeMonth + Math.trunc(deltaMonths);
+  const nextYear = Math.floor(total / 12);
+  const nextMonth = ((total % 12) + 12) % 12;
+  return { year: nextYear, month: nextMonth };
+}
+
+export function computeContinuousCarryoverAndSavings(
+  rows: CategoryRow[],
+  entries: TransactionEntry[],
+  year: number,
+  focusMonth: number
+): { previousMonthCarryover: number; isolatedSavingsTotal: number } {
+  const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
+  const targetAbsMonth = Math.trunc(year) * 12 + safeMonth;
+  const rowMap = new Map(rows.map((r) => [r.id, r]));
+
+  let carryover = 0;
+  let isolatedSavings = 0;
+
+  for (const e of entries) {
+    if (isDeduplicatedEntry(e)) continue;
+    const row = rowMap.get(e.rowId);
+    if (!row || row.hidden) continue;
+    if (!Number.isFinite(e.year) || !Number.isFinite(e.month) || !Number.isFinite(e.amount)) continue;
+
+    const entryAbsMonth = Math.trunc(e.year) * 12 + Math.min(11, Math.max(0, Math.trunc(e.month)));
+    const amt = e.amount;
+
+    if (entryAbsMonth < targetAbsMonth) {
+      if (row.block === 'income') {
+        carryover += amt;
+      } else if (row.block === 'fixed' || row.block === 'variable') {
+        carryover -= amt;
+      } else if (row.block === 'savings') {
+        // Valor guardado na Caixinha fica isolado e não soma no saldo disponível do mês seguinte
+        carryover -= amt;
+        isolatedSavings += amt;
+      }
+    } else if (entryAbsMonth === targetAbsMonth && row.block === 'savings') {
+      isolatedSavings += amt;
+    }
+  }
+
+  return {
+    previousMonthCarryover: Number(carryover.toFixed(2)),
+    isolatedSavingsTotal: Number(isolatedSavings.toFixed(2)),
+  };
+}
+
 export function computePreviousMonthCarryover(
   totals: MatrixTotals,
-  focusMonth: number
+  focusMonth: number,
+  rows?: CategoryRow[],
+  entries?: TransactionEntry[],
+  year?: number
 ): number {
+  if (rows && entries && year !== undefined) {
+    return computeContinuousCarryoverAndSavings(rows, entries, year, focusMonth).previousMonthCarryover;
+  }
   const safeMonth = Math.min(11, Math.max(0, Math.trunc(focusMonth)));
   let running = 0;
   for (let m = 0; m < safeMonth; m++) {
     const inc = totals.incomeMonthly[m] ?? 0;
     const exp = totals.totalExpenseMonthly[m] ?? 0;
     const sav = totals.savingsMonthly[m] ?? 0;
-    if (inc !== 0 || exp !== 0) {
+    if (inc !== 0 || exp !== 0 || sav !== 0) {
       running += inc - exp - sav;
     }
   }
@@ -1403,6 +1538,9 @@ export interface MonthlyBudgetForecast {
   currentAccountBalance: number;
   previousMonthCarryover: number;
   isolatedSavingsTotal: number;
+  realizedSavingsInMonth: number;
+  pendingSavingsInMonth: number;
+  savingsInMonth: number;
   realizedIncome: number;
   expectedPendingIncome: number;
   totalForecastIncome: number;
@@ -1412,6 +1550,13 @@ export interface MonthlyBudgetForecast {
   unpaidCardInvoices: number;
   totalPendingCommitments: number;
   totalForecastExpense: number;
+  cashInHand: number;
+  committedInMonth: number;
+  futureNextMonthCommitments: number;
+  futureNext3MonthsTotal: number;
+  nextCycleYear: number;
+  nextCycleMonth: number;
+  projectedCarryoverToNextMonth: number;
   safeToSpendRemaining: number;
   projectedMonthClose: number;
   budgetUtilizationPct: number;
@@ -1441,7 +1586,6 @@ export function computeMonthlyBudgetForecast(params: {
     creditCards,
     cardPurchases,
     paidCardInvoices,
-    totals,
     year,
     focusMonth,
     categoryRowId = 'all',
@@ -1457,9 +1601,10 @@ export function computeMonthlyBudgetForecast(params: {
       .reduce((sum, a) => sum + (Number.isFinite(a.balance) ? a.balance : 0), 0)
       .toFixed(2)
   );
+  const continuous = computeContinuousCarryoverAndSavings(rows, entries, year, safeMonth);
   const previousMonthCarryover =
-    categoryRowId === 'all' ? computePreviousMonthCarryover(totals, safeMonth) : 0;
-  const isolatedSavingsTotal = Number((totals.savingsAnnual ?? 0).toFixed(2));
+    categoryRowId === 'all' ? continuous.previousMonthCarryover : 0;
+  const isolatedSavingsTotal = continuous.isolatedSavingsTotal;
   const effectiveCarryOrBalance = hasManualAccounts
     ? currentAccountBalance
     : previousMonthCarryover;
@@ -1476,6 +1621,8 @@ export function computeMonthlyBudgetForecast(params: {
   let pendingEntryIncome = 0;
   let realizedExpense = 0;
   let pendingScheduledDebits = 0;
+  let realizedSavingsInMonth = 0;
+  let pendingSavingsInMonth = 0;
 
   monthEntries.forEach((e) => {
     const row = rowMap.get(e.rowId);
@@ -1487,9 +1634,14 @@ export function computeMonthlyBudgetForecast(params: {
     } else if (row.block === 'fixed' || row.block === 'variable') {
       if (e.status === 'paid') realizedExpense += amt;
       else pendingScheduledDebits += amt;
+    } else if (row.block === 'savings') {
+      // Valor destinado à Caixinha fica isolado do orçamento livre do mês e do saldo transportado
+      if (e.status === 'paid') realizedSavingsInMonth += amt;
+      else pendingSavingsInMonth += amt;
     }
-    // Note: block === 'savings' (Caixinha / Guardado) stays strictly isolated in isolatedSavingsTotal
   });
+
+  const savingsInMonth = Number((realizedSavingsInMonth + pendingSavingsInMonth).toFixed(2));
 
   let pendingRecurringIncome = 0;
   let pendingRecurringDebits = 0;
@@ -1532,18 +1684,124 @@ export function computeMonthlyBudgetForecast(params: {
   );
   const totalForecastExpense = Number((realizedExpense + totalPendingCommitments).toFixed(2));
 
-  // Formula:
-  // (saldoAtual ou saldoAnteriorLivre) + receitasPrevistasConfirmadas - gastosJaRealizados - contasFixasECompromissosPendentes
-  const safeToSpendRemaining = Number(
-    (effectiveCarryOrBalance + totalForecastIncome - realizedExpense - totalPendingCommitments).toFixed(2)
+  // Dinheiro na mão agora: saldo base + receitas já recebidas - gastos já pagos - caixinha já reservada
+  const cashInHand = Number(
+    (effectiveCarryOrBalance + realizedIncome - realizedExpense - realizedSavingsInMonth).toFixed(2)
   );
-  const projectedMonthClose = Number((totalForecastIncome - totalForecastExpense).toFixed(2));
+  const committedInMonth = Number((totalPendingCommitments + pendingSavingsInMonth).toFixed(2));
+
+  // Próximo ciclo (funciona continuamente em viradas de ano: Dez/2026 -> Jan/2027, 2028+)
+  const nextCycle = shiftYearMonth(year, safeMonth, 1);
+
+  // Compromissos futuros (M+1 e próximos 3 meses) combinando cartões, parcelas de lançamentos e recorrências
+  let futureNextMonthCommitments = 0;
+  let futureNext3MonthsTotal = 0;
+  if (categoryRowId === 'all') {
+    const instSummary = computeInstallmentsSummary(
+      entries,
+      rows,
+      accounts,
+      year,
+      safeMonth,
+      creditCards,
+      cardPurchases,
+      paidCardInvoices
+    );
+
+    const next1CardOverview = computeAllCreditCardsOverview(
+      creditCards,
+      cardPurchases,
+      paidCardInvoices,
+      nextCycle.year,
+      nextCycle.month
+    );
+    const next1RecurringDebits = activeBills
+      .filter((b) => (b.type ?? 'debit') === 'debit')
+      .reduce((sum, b) => {
+        const eff = getEffectiveRecurringStatus(b, nextCycle.year, nextCycle.month);
+        return eff.status === 'paid' ? sum : sum + (Number.isFinite(b.amount) ? b.amount : 0);
+      }, 0);
+
+    const next1LedgerInstallments = instSummary.items
+      .filter((it) => it.source === 'entry')
+      .reduce((sum, it) => {
+        const startAbs = it.year * 12 + it.month;
+        const next1Abs = nextCycle.year * 12 + nextCycle.month;
+        const diff = next1Abs - startAbs;
+        return diff >= 1 && diff <= it.remainingCount ? sum + it.installmentAmount : sum;
+      }, 0);
+
+    const next1ScheduledEntries = entries
+      .filter((e) => {
+        if (e.year !== nextCycle.year || e.month !== nextCycle.month) return false;
+        if (isDeduplicatedEntry(e) || e.status === 'paid') return false;
+        const row = rowMap.get(e.rowId);
+        return Boolean(row && !row.hidden && (row.block === 'fixed' || row.block === 'variable'));
+      })
+      .reduce((sum, e) => sum + (Number.isFinite(e.amount) ? e.amount : 0), 0);
+
+    futureNextMonthCommitments = Number(
+      (
+        next1CardOverview.monthUnpaidInvoice +
+        next1RecurringDebits +
+        next1LedgerInstallments +
+        next1ScheduledEntries
+      ).toFixed(2)
+    );
+
+    let sum3Months = 0;
+    for (let offset = 1; offset <= 3; offset++) {
+      const mTarget = shiftYearMonth(year, safeMonth, offset);
+      const cardOv = computeAllCreditCardsOverview(
+        creditCards,
+        cardPurchases,
+        paidCardInvoices,
+        mTarget.year,
+        mTarget.month
+      );
+      const ledgerInstAmt = instSummary.items
+        .filter((it) => it.source === 'entry')
+        .reduce((sum, it) => {
+          const startAbs = it.year * 12 + it.month;
+          const mAbs = mTarget.year * 12 + mTarget.month;
+          const diff = mAbs - startAbs;
+          return diff >= 1 && diff <= it.remainingCount ? sum + it.installmentAmount : sum;
+        }, 0);
+      const scheduledAmt = entries
+        .filter((e) => {
+          if (e.year !== mTarget.year || e.month !== mTarget.month) return false;
+          if (isDeduplicatedEntry(e) || e.status === 'paid') return false;
+          const row = rowMap.get(e.rowId);
+          return Boolean(row && !row.hidden && (row.block === 'fixed' || row.block === 'variable'));
+        })
+        .reduce((sum, e) => sum + (Number.isFinite(e.amount) ? e.amount : 0), 0);
+      sum3Months += cardOv.monthUnpaidInvoice + ledgerInstAmt + scheduledAmt;
+    }
+    futureNext3MonthsTotal = Number(sum3Months.toFixed(2));
+  }
+
+  // Formula:
+  // (saldoAtual ou saldoAnteriorLivre) + receitasPrevistas - gastosRealizados - pendências - caixinhaDoMes
+  const safeToSpendRemaining = Number(
+    (
+      effectiveCarryOrBalance +
+      totalForecastIncome -
+      realizedExpense -
+      totalPendingCommitments -
+      savingsInMonth
+    ).toFixed(2)
+  );
+  const projectedMonthClose = Number(
+    (totalForecastIncome - totalForecastExpense - savingsInMonth).toFixed(2)
+  );
+  const projectedCarryoverToNextMonth = safeToSpendRemaining;
 
   const budgetBase = Math.max(0, effectiveCarryOrBalance + totalForecastIncome);
+  const committedTotalForUtilization = totalForecastExpense + savingsInMonth;
   const budgetUtilizationPct =
     budgetBase > 0
-      ? Number(Math.min(180, (totalForecastExpense / budgetBase) * 100).toFixed(1))
-      : totalForecastExpense > 0
+      ? Number(Math.min(180, (committedTotalForUtilization / budgetBase) * 100).toFixed(1))
+      : committedTotalForUtilization > 0
       ? 100
       : 0;
 
@@ -1561,6 +1819,9 @@ export function computeMonthlyBudgetForecast(params: {
     currentAccountBalance: effectiveCarryOrBalance,
     previousMonthCarryover,
     isolatedSavingsTotal,
+    realizedSavingsInMonth: Number(realizedSavingsInMonth.toFixed(2)),
+    pendingSavingsInMonth: Number(pendingSavingsInMonth.toFixed(2)),
+    savingsInMonth,
     realizedIncome: Number(realizedIncome.toFixed(2)),
     expectedPendingIncome,
     totalForecastIncome,
@@ -1570,6 +1831,13 @@ export function computeMonthlyBudgetForecast(params: {
     unpaidCardInvoices: Number(unpaidCardInvoices.toFixed(2)),
     totalPendingCommitments,
     totalForecastExpense,
+    cashInHand,
+    committedInMonth,
+    futureNextMonthCommitments,
+    futureNext3MonthsTotal,
+    nextCycleYear: nextCycle.year,
+    nextCycleMonth: nextCycle.month,
+    projectedCarryoverToNextMonth,
     safeToSpendRemaining,
     projectedMonthClose,
     budgetUtilizationPct,

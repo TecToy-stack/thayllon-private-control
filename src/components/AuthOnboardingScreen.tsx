@@ -672,8 +672,8 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#090D16] text-slate-900 dark:text-slate-100 flex flex-col justify-center items-center px-safe sm:p-6 pt-safe-screen pb-safe-nav">
-      <div className="w-full max-w-lg space-y-6">
+    <div className="min-h-[100dvh] bg-[#F8FAFC] dark:bg-[#090D16] text-slate-900 dark:text-slate-100 flex flex-col justify-center items-center px-safe sm:p-6 pt-safe-screen pb-safe-nav overflow-y-auto">
+      <div className="my-auto w-full max-w-lg space-y-5 sm:space-y-6">
         {/* Brand Header */}
         <div className="text-center space-y-2">
           <div className="mx-auto flex h-16 w-16 items-center justify-center">
@@ -700,7 +700,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
         <div className="rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.09] shadow-xl overflow-hidden">
           {/* STAGE 1: CPF OR USERNAME+PASSWORD IDENTIFICATION */}
           {stage === 'cpf' && (
-            <div className="p-6 sm:p-8 space-y-5">
+            <div className="p-5 sm:p-8 space-y-5">
               {(rememberedCpf || credUsername || draftProfile?.fullName || recoveredAccount) && (
                 <div className="p-4 rounded-xl bg-blue-50/80 dark:bg-[#0D1320] border border-blue-200 dark:border-blue-500/30 space-y-3">
                   <div className="flex items-start justify-between gap-3">
@@ -1187,7 +1187,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
 
           {/* STAGE 2A: EXISTING ACCOUNT LOGIN */}
           {stage === 'login' && lookup && (
-            <div className="p-6 sm:p-8 space-y-5">
+            <div className="p-5 sm:p-8 space-y-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold">
@@ -1374,7 +1374,7 @@ export const AuthOnboardingScreen: React.FC<AuthOnboardingScreenProps> = ({
 
           {/* STAGE 2B: NEW ACCOUNT REGISTRATION + KYC + BIOMETRY */}
           {stage === 'register' && lookup && (
-            <div className="p-6 sm:p-8 space-y-5">
+            <div className="p-5 sm:p-8 space-y-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[11px] uppercase tracking-wider text-blue-600 dark:text-blue-400 font-semibold inline-flex items-center gap-1">

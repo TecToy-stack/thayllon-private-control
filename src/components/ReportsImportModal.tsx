@@ -199,7 +199,7 @@ export const ReportsImportModal: React.FC<ReportsImportModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/60 backdrop-blur-sm sm:p-4 pt-safe-screen">
-      <div className="w-full max-w-4xl max-h-[92vh] flex flex-col rounded-t-3xl sm:rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl overflow-hidden">
+      <div className="w-full max-w-4xl max-h-[calc(100dvh-env(safe-area-inset-top,0px)-0.5rem)] sm:max-h-[90dvh] flex flex-col rounded-t-3xl sm:rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl overflow-hidden pb-safe-nav sm:pb-0">
         {/* Header */}
         <div className="px-5 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
@@ -235,19 +235,19 @@ export const ReportsImportModal: React.FC<ReportsImportModalProps> = ({
         </div>
 
         {/* Mode Tabs */}
-        <div className="px-5 pt-3 pb-2 border-b border-slate-100 dark:border-white/[0.06] bg-slate-50/70 dark:bg-[#0D1320]/70 shrink-0">
-          <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
+        <div className="px-4 sm:px-5 pt-3 pb-2 border-b border-slate-100 dark:border-white/[0.06] bg-slate-50/70 dark:bg-[#0D1320]/70 shrink-0">
+          <div className="grid grid-cols-2 w-full sm:w-auto sm:inline-flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08]">
             <button
               type="button"
               onClick={() => setActiveMode('export')}
-              className={`inline-flex items-center gap-2 min-h-[40px] px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 sm:gap-2 min-h-[40px] px-2.5 sm:px-4 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors min-w-0 ${
                 activeMode === 'export'
                   ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <Download className="h-3.5 w-3.5" />
-              <span>
+              <Download className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">
                 {isEn ? 'Export Reports' : isEs ? 'Exportar Reportes' : 'Exportar Relatórios'}
               </span>
             </button>
@@ -255,14 +255,14 @@ export const ReportsImportModal: React.FC<ReportsImportModalProps> = ({
             <button
               type="button"
               onClick={() => setActiveMode('import')}
-              className={`inline-flex items-center gap-2 min-h-[40px] px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 sm:gap-2 min-h-[40px] px-2.5 sm:px-4 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors min-w-0 ${
                 activeMode === 'import'
                   ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <Upload className="h-3.5 w-3.5" />
-              <span>
+              <Upload className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">
                 {isEn
                   ? 'Import Spreadsheet + Template'
                   : isEs

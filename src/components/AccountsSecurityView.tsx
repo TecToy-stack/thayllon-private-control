@@ -136,7 +136,7 @@ export const AccountsSecurityView: React.FC<AccountsSecurityViewProps> = ({
   };
 
   return (
-    <div className="space-y-6 pb-20 lg:pb-6">
+    <div className="space-y-6 pb-2 lg:pb-6">
       {/* Header */}
       <div className="p-5 rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.08] flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -383,12 +383,12 @@ export const AccountsSecurityView: React.FC<AccountsSecurityViewProps> = ({
 
       {/* Add Manual Bank Account Modal */}
       {addModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 pt-safe-screen pb-safe-nav overflow-y-auto">
           <div
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs"
             onClick={() => setAddModalOpen(false)}
           />
-          <div className="relative z-10 w-full max-w-xl rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto">
+          <div className="relative z-10 my-auto w-full max-w-xl rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl max-h-[calc(100dvh-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px)-1.25rem)] overflow-y-auto">
             <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between">
               <h3 className="text-base font-semibold text-slate-900 dark:text-white">
                 Adicionar Conta Bancária

@@ -118,7 +118,7 @@ export const CreditCardPieChart: React.FC<CreditCardPieChartProps> = ({
       return {
         ...slice,
         pct,
-        path: buildDonutArcPath(110, 110, 96, 58, startAngle, endAngle),
+        path: buildDonutArcPath(110, 110, 98, 62, startAngle, endAngle),
       };
     });
   }, [slices, totalValue]);
@@ -138,14 +138,14 @@ export const CreditCardPieChart: React.FC<CreditCardPieChartProps> = ({
           </p>
         </div>
 
-        <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06]">
+        <div className="grid grid-cols-2 w-full sm:w-auto sm:inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06]">
           <button
             type="button"
             onClick={() => {
               setMode('by_card');
               setSelectedSliceId(null);
             }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition-colors truncate ${
               mode === 'by_card'
                 ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400'
@@ -159,7 +159,7 @@ export const CreditCardPieChart: React.FC<CreditCardPieChartProps> = ({
               setMode('limit_split');
               setSelectedSliceId(null);
             }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-medium transition-colors truncate ${
               mode === 'limit_split'
                 ? 'bg-white dark:bg-[#1A2234] text-blue-600 dark:text-blue-400 shadow-xs'
                 : 'text-slate-600 dark:text-slate-400'
@@ -180,7 +180,7 @@ export const CreditCardPieChart: React.FC<CreditCardPieChartProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
           {/* Interactive Donut SVG */}
           <div className="md:col-span-5 flex flex-col items-center justify-center">
-            <div className="relative w-[220px] h-[220px]">
+            <div className="relative w-[210px] h-[210px] sm:w-[220px] sm:h-[220px]">
               <svg viewBox="0 0 220 220" className="w-full h-full">
                 {computedArcs.map((arc) => {
                   const isActive = activeSlice?.id === arc.id;
@@ -199,18 +199,20 @@ export const CreditCardPieChart: React.FC<CreditCardPieChartProps> = ({
                   );
                 })}
               </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-6 text-center">
-                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate max-w-full">
-                  {activeSlice ? activeSlice.label : 'Total'}
-                </span>
-                <span className="mt-0.5 text-sm font-semibold font-mono tabular-nums text-slate-900 dark:text-white">
-                  {formatBRL(activeSlice ? activeSlice.value : totalLimit, privacyMode)}
-                </span>
-                {activeSlice && (
-                  <span className="text-[11px] font-mono tabular-nums text-blue-600 dark:text-blue-400 font-semibold">
-                    {activeSlice.pct.toFixed(1)}%
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="w-[106px] sm:w-[112px] px-1 flex flex-col items-center justify-center text-center leading-tight">
+                  <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 truncate max-w-full">
+                    {activeSlice ? activeSlice.label : 'Total'}
                   </span>
-                )}
+                  <span className="mt-0.5 text-xs sm:text-[13px] font-semibold font-mono tabular-nums text-slate-900 dark:text-white truncate max-w-full">
+                    {formatBRL(activeSlice ? activeSlice.value : totalLimit, privacyMode)}
+                  </span>
+                  {activeSlice && (
+                    <span className="mt-0.5 text-[10px] font-mono tabular-nums text-blue-600 dark:text-blue-400 font-semibold">
+                      {activeSlice.pct.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </div>

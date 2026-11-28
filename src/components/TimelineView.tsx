@@ -25,6 +25,7 @@ interface TimelineViewProps {
   accounts: BankAccount[];
   alerts: AlertItem[];
   settings: AppSettings;
+  onUpdateSettings?: (patch: Partial<AppSettings>) => void;
 }
 
 export const TimelineView: React.FC<TimelineViewProps> = ({
@@ -33,6 +34,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   accounts,
   alerts,
   settings,
+  onUpdateSettings,
 }) => {
   const [filter, setFilter] = useState<TimelineFilter>({
     window: 'year',
@@ -156,6 +158,32 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            {onUpdateSettings && (
+              <div className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-[#0D1320] border border-slate-200 dark:border-white/[0.08] overflow-hidden">
+                <button
+                  type="button"
+                  aria-label="Ano anterior na linha do tempo"
+                  onClick={() => onUpdateSettings({ activeYear: Math.max(1900, activeYear - 1) })}
+                  className="px-2 py-1.5 text-xs font-mono text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/5"
+                  title="Ano anterior"
+                >
+                  −
+                </button>
+                <span className="px-2.5 py-1.5 text-xs font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
+                  {activeYear}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Próximo ano na linha do tempo"
+                  onClick={() => onUpdateSettings({ activeYear: activeYear + 1 })}
+                  className="px-2 py-1.5 text-xs font-mono text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-white/5"
+                  title="Próximo ano (2027, 2028+)"
+                >
+                  +
+                </button>
+              </div>
+            )}
+
             {(filter.window === 'month' ||
               filter.window === 'quarter' ||
               filter.window === 'semester') && (

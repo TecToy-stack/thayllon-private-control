@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useDeferredValue, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -21,6 +21,8 @@ import {
   AppLanguage,
   BankAccount,
   CategoryRow,
+  CreditCardAccount,
+  CreditCardPurchase,
   MatrixTotals,
   RecurringBill,
   RecurringBillStatus,
@@ -41,6 +43,7 @@ import {
   getTranslations,
   translateEntryStatus,
 } from '../utils/i18n';
+import { CategoryIconBadge } from '../utils/categoryVisuals';
 
 interface BackupReminderBannerProps {
   visible: boolean;
@@ -244,6 +247,9 @@ interface DailyControlHubProps {
   rows: CategoryRow[];
   entries: TransactionEntry[];
   accounts: BankAccount[];
+  creditCards?: CreditCardAccount[];
+  cardPurchases?: CreditCardPurchase[];
+  paidCardInvoices?: Record<string, boolean>;
   recurringBills: RecurringBill[];
   totals: MatrixTotals;
   activeYear: number;
@@ -256,6 +262,7 @@ interface DailyControlHubProps {
   onDeleteRecurringBill: (id: string) => void;
   onUpdateRow: (rowId: string, patch: Partial<CategoryRow>) => void;
   onSelectCell: (row: CategoryRow, month: number) => void;
+  onOpenCardsHub?: () => void;
 }
 
 type DailyTab = 'recurring' | 'limits' | 'installments' | 'search';
@@ -264,6 +271,9 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
   rows,
   entries,
   accounts,
+  creditCards = [],
+  cardPurchases = [],
+  paidCardInvoices = {},
   recurringBills,
   totals,
   activeYear,
@@ -276,6 +286,7 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
   onDeleteRecurringBill,
   onUpdateRow,
   onSelectCell,
+  onOpenCardsHub,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<DailyTab>('recurring');
   const t = getTranslations(language);
@@ -443,17 +454,29 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
 
   // ---- Installments Summary ----
   const installmentsSummary = useMemo(
-    () => computeInstallmentsSummary(entries, rows, accounts, activeYear, focusMonth),
-    [entries, rows, accounts, activeYear, focusMonth]
+    () =>
+      computeInstallmentsSummary(
+        entries,
+        rows,
+        accounts,
+        activeYear,
+        focusMonth,
+        creditCards,
+        cardPurchases,
+        paidCardInvoices
+      ),
+    [entries, rows, accounts, activeYear, focusMonth, creditCards, cardPurchases, paidCardInvoices]
   );
 
   // ---- Quick Entry Search State ----
   const [quickQuery, setQuickQuery] = useState('');
+  const deferredQuickQuery = useDeferredValue(quickQuery);
+
+  const rowMap = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
   const quickSearchResults = useMemo(() => {
-    const rowMap = new Map(rows.map((r) => [r.id, r]));
     const accMap = new Map(accounts.map((a) => [a.id, a]));
-    const q = quickQuery.trim().toLowerCase();
+    const q = deferredQuickQuery.trim().toLowerCase();
 
     const yearEntries = entries
       .filter((e) => e.year === activeYear)
@@ -501,7 +524,7 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
         amountBr.includes(q)
       );
     });
-  }, [entries, rows, accounts, activeYear, quickQuery, language, t]);
+  }, [entries, rowMap, accounts, activeYear, deferredQuickQuery, language, t]);
 
   const tabItems: { id: DailyTab; label: string; countBadge?: string; alertTone?: boolean }[] = [
     {
@@ -579,11 +602,8 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
             <div>
               <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
                 <CalendarClock className="h-4 w-4 text-[#C9A86A]" />
-                Contas Fixas & Recebimentos Recorrentes
+                Recorrências do Mês
               </h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Cadastre, edite, renomeie, pause ou ative débitos e recebimentos mensais com alertas configuráveis.
-              </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
@@ -619,13 +639,13 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-slate-900 dark:bg-[#C9A86A] text-white dark:text-[#090D16] hover:opacity-90"
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>+ Nova Recorrência</span>
+                <span>Nova Recorrência</span>
               </button>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06]">
+            <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0D1320] border border-slate-200/70 dark:border-white/[0.06] max-w-full">
               {(
                 [
                   { id: 'all', label: `Todos (${resolvedBills.length})` },
@@ -788,7 +808,7 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
                 const isIncome = bill.type === 'income';
                 const isActive = bill.active !== false;
                 const catName = bill.categoryRowId
-                  ? rows.find((r) => r.id === bill.categoryRowId)?.name
+                  ? rowMap.get(bill.categoryRowId)?.name
                   : undefined;
 
                 return (
@@ -839,7 +859,7 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 ml-auto">
+                    <div className="w-full sm:w-auto flex flex-wrap items-center justify-between sm:justify-end gap-2">
                       <span
                         className={`font-mono font-semibold tabular-nums ${
                           isIncome
@@ -928,7 +948,6 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
               <Gauge className="h-4 w-4 text-[#C9A86A]" />
               {t.daily.limits.title}
             </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{t.daily.limits.subtitle}</p>
           </div>
 
           {limitItems.length === 0 ? (
@@ -970,8 +989,9 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
                     className="p-3.5 rounded-lg bg-slate-50 dark:bg-[#0D1320] border border-slate-200/80 dark:border-white/[0.06] space-y-2"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                        {item.row.name}
+                      <span className="inline-flex items-center gap-2 min-w-0 text-xs font-semibold text-slate-900 dark:text-slate-100">
+                        <CategoryIconBadge row={item.row} size="xs" />
+                        <span className="truncate">{item.row.name}</span>
                       </span>
                       <span
                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-medium shrink-0 ${badgeStyle}`}
@@ -1157,26 +1177,42 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-lg border border-slate-200 dark:border-white/[0.07] divide-y divide-slate-100 dark:divide-white/[0.05] max-h-[260px] overflow-y-auto">
+              <div className="rounded-lg border border-slate-200 dark:border-white/[0.07] divide-y divide-slate-100 dark:divide-white/[0.05] max-h-[280px] overflow-y-auto">
                 {installmentsSummary.items.map((item) => {
                   const pctPaid = Math.min(100, Math.round((item.current / item.total) * 100));
-                  const targetRow = rows.find((r) => r.id === item.rowId);
+                  const targetRow = item.rowId ? rowMap.get(item.rowId) : undefined;
+                  const isCardItem = item.source === 'card';
                   return (
                     <div
                       key={item.id}
-                      onClick={() => targetRow && onSelectCell(targetRow, item.month)}
-                      className="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs bg-white dark:bg-[#111827] hover:bg-slate-50 dark:hover:bg-[#1A2234]/60 cursor-pointer transition-colors"
+                      onClick={() => {
+                        if (isCardItem) {
+                          onOpenCardsHub?.();
+                        } else if (targetRow) {
+                          onSelectCell(targetRow, item.month);
+                        }
+                      }}
+                      className="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5 text-xs bg-white dark:bg-[#111827] hover:bg-slate-50 dark:hover:bg-[#1A2234]/60 cursor-pointer transition-colors"
                     >
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                           <span className="font-medium text-slate-900 dark:text-slate-100 truncate">
                             {item.title}
                           </span>
                           <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[#C9A86A]/15 text-[#8C6A2E] dark:text-[#E5C88F] shrink-0">
                             {item.shortLabel}
                           </span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${
+                              isCardItem
+                                ? 'bg-blue-500/10 text-blue-700 dark:text-blue-300'
+                                : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300'
+                            }`}
+                          >
+                            {isCardItem ? 'Cartão' : 'Lançamento'}
+                          </span>
                         </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 break-words">
                           {item.categoryName} · {item.accountLabel} · {t.daily.installments.paidLabel}{' '}
                           <span className="font-mono">{item.current}</span> ·{' '}
                           {t.daily.installments.remainingLabel}{' '}
@@ -1186,11 +1222,14 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
 
                       <div className="text-right font-mono tabular-nums shrink-0">
                         <div className="font-semibold text-slate-900 dark:text-white">
-                          {formatBRL(item.remainingTotalAmount, privacyMode)}
+                          {item.remainingCount > 0
+                            ? formatBRL(item.remainingTotalAmount, privacyMode)
+                            : formatBRL(item.installmentAmount, privacyMode)}
                         </div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400">
-                          {formatBRL(item.installmentAmount, privacyMode)}
-                          {t.daily.installments.perMonthShort}
+                          {item.remainingCount > 0
+                            ? `${formatBRL(item.installmentAmount, privacyMode)}${t.daily.installments.perMonthShort}`
+                            : 'Última parcela do plano'}
                         </div>
                       </div>
                     </div>
@@ -1221,7 +1260,7 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[220px]">
+            <div className="relative flex-1 min-w-0">
               <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -1268,6 +1307,7 @@ export const DailyControlHub: React.FC<DailyControlHubProps> = ({
                     className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs bg-white dark:bg-[#111827] hover:bg-slate-50 dark:hover:bg-[#1A2234]/60 cursor-pointer transition-colors"
                   >
                     <div className="flex items-center gap-3 min-w-0">
+                      <CategoryIconBadge row={row} size="xs" />
                       <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums shrink-0">
                         {String(entry.day).padStart(2, '0')}/{monthNamesShort[entry.month]}
                       </span>

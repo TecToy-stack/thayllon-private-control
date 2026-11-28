@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X, Plus, Mic, Square, Sparkles, Settings, CheckCircle2 } from 'lucide-react';
+import React, { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
+import { X, Plus, Mic, Square, Sparkles, Settings, CheckCircle2, Search, Check } from 'lucide-react';
 import {
   AppLanguage,
   BankAccount,
@@ -15,6 +15,13 @@ import {
   translatePaymentMethod,
 } from '../utils/i18n';
 import { parseVoiceTransaction, ParsedVoiceEntry } from '../utils/voiceEntryParser';
+import {
+  CategoryIconBadge,
+  CategoryIconKey,
+  CategoryVisualPicker,
+  getDefaultCategoryColor,
+  getDefaultCategoryIcon,
+} from '../utils/categoryVisuals';
 import {
   isAndroidNativeApp,
   isNativeSpeechRecognitionAvailable,
@@ -62,6 +69,7 @@ interface NewEntryModalProps {
   language: AppLanguage;
   onClose: () => void;
   onAddEntry: (entry: Omit<TransactionEntry, 'id' | 'createdAt'>) => void;
+  onAddRow?: (row: Omit<CategoryRow, 'id' | 'order'>) => CategoryRow | void;
 }
 
 function getPaidStatusLabel(isIncome: boolean, language: AppLanguage): string {
@@ -77,6 +85,14 @@ function joinTranscriptSegments(accumulated: string, currentSegment: string): st
   return a || b;
 }
 
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   isOpen,
   rows,
@@ -88,6 +104,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   language,
   onClose,
   onAddEntry,
+  onAddRow,
 }) => {
   const t = getTranslations(language);
   const monthNamesFull = getMonthNamesFull(language);
@@ -97,10 +114,22 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   const [showVoicePanel, setShowVoicePanel] = useState(Boolean(autoStartVoice));
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // Inline date-free category creator & search
+  const [categorySearch, setCategorySearch] = useState('');
+  const deferredCategorySearch = useDeferredValue(categorySearch);
+  const [showNewCatForm, setShowNewCatForm] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatBlock, setNewCatBlock] = useState<'fixed' | 'variable'>('variable');
+  const [newCatColor, setNewCatColor] = useState('#2563EB');
+  const [newCatIcon, setNewCatIcon] = useState<CategoryIconKey>('tag');
+
   const visibleRows = rows.filter((r) => !r.hidden);
   const [rowId, setRowId] = useState(visibleRows[0]?.id ?? 'inc-pizzaria');
   const [month, setMonth] = useState(
     Math.min(11, Math.max(0, Number.isFinite(defaultMonth) ? Math.trunc(defaultMonth) : 10))
+  );
+  const [entryYear, setEntryYear] = useState(
+    Number.isFinite(activeYear) ? Math.trunc(activeYear) : new Date().getFullYear()
   );
   const [day, setDay] = useState(String(new Date().getDate()));
   const [amount, setAmount] = useState('');
@@ -126,12 +155,22 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   const accumulatedTranscriptRef = useRef('');
   const currentSegmentRef = useRef('');
   const restartTimerRef = useRef<number | null>(null);
+  const voiceTextRef = useRef('');
   const monthRef = useRef(month);
+  const yearRef = useRef(entryYear);
   const rowsRef = useRef(rows);
+
+  useEffect(() => {
+    voiceTextRef.current = voiceText;
+  }, [voiceText]);
 
   useEffect(() => {
     monthRef.current = month;
   }, [month]);
+
+  useEffect(() => {
+    yearRef.current = entryYear;
+  }, [entryYear]);
 
   useEffect(() => {
     rowsRef.current = rows;
@@ -142,6 +181,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
 
   const handleSelectFlowType = (nextFlow: 'expense' | 'income' | 'savings') => {
     setFlowType(nextFlow);
+    setCategorySearch('');
     const matchesFlow = (r: CategoryRow) =>
       nextFlow === 'income'
         ? r.block === 'income'
@@ -162,7 +202,13 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
   const applyParsedVoice = useCallback((transcript: string) => {
     const trimmed = transcript.trim();
     if (!trimmed) return;
-    const parsed = parseVoiceTransaction(trimmed, rowsRef.current, monthRef.current);
+    const parsed = parseVoiceTransaction(
+      trimmed,
+      rowsRef.current,
+      monthRef.current,
+      new Date(),
+      yearRef.current
+    );
     setParsedPreview(parsed);
     if (parsed.matchedRowId) {
       setRowId(parsed.matchedRowId);
@@ -186,6 +232,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     if (parsed.amount !== null) setAmount(parsed.amount.toFixed(2));
     if (parsed.foundExplicitDay) setDay(String(parsed.day));
     if (parsed.foundExplicitMonth) setMonth(parsed.month);
+    if (parsed.foundExplicitYear) setEntryYear(parsed.year);
     if (parsed.hasExplicitPaymentMethod || parsed.flowType === 'income') {
       setPaymentMethod(parsed.paymentMethod);
     }
@@ -270,9 +317,17 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
       try {
         const rec = new SpeechCtor();
         rec.lang = speechLang;
-        rec.interimResults = true;
-        rec.maxAlternatives = 1;
         rec.continuous = true;
+        try {
+          rec.interimResults = true;
+        } catch {
+          // Fallback when interimResults is unsupported
+        }
+        try {
+          rec.maxAlternatives = 1;
+        } catch {
+          // Ignore unsupported maxAlternatives
+        }
 
         rec.onresult = (event) => {
           let sessionTranscript = '';
@@ -366,109 +421,114 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     [applyParsedVoice]
   );
 
-  const startVoiceCapture = useCallback(async () => {
-    setVoiceError(null);
-    setVoiceDeniedSettings(false);
-    setShowVoicePanel(true);
+  const startVoiceCapture = useCallback(
+    async (options?: { resetTranscript?: boolean }) => {
+      setVoiceError(null);
+      setVoiceDeniedSettings(false);
+      setShowVoicePanel(true);
 
-    if (isListening || keepListeningRef.current) {
-      await stopListening();
-      return;
-    }
+      if (!options?.resetTranscript && (isListening || keepListeningRef.current)) {
+        await stopListening();
+        return;
+      }
 
-    const perms = await requestAppPermission('microphone');
-    if (perms.microphone === 'denied') {
-      setVoiceDeniedSettings(isAndroidNativeApp());
-      setVoiceError(
-        isAndroidNativeApp()
-          ? 'Permissão de microfone negada no Android. Libere nos Ajustes do App ou digite a frase abaixo.'
-          : 'Permissão de microfone bloqueada no navegador. Você pode digitar ou colar a frase abaixo.'
-      );
-      return;
-    }
+      const perms = await requestAppPermission('microphone');
+      if (perms.microphone === 'denied') {
+        setVoiceDeniedSettings(isAndroidNativeApp());
+        setVoiceError(
+          isAndroidNativeApp()
+            ? 'Permissão de microfone negada no Android. Libere nos Ajustes do App ou digite a frase abaixo.'
+            : 'Permissão de microfone bloqueada no navegador. Você pode digitar ou colar a frase abaixo.'
+        );
+        return;
+      }
 
-    const speechLang = language === 'en' ? 'en-US' : language === 'es' ? 'es-ES' : 'pt-BR';
-    accumulatedTranscriptRef.current = voiceText.trim();
-    currentSegmentRef.current = '';
+      const speechLang = language === 'en' ? 'en-US' : language === 'es' ? 'es-ES' : 'pt-BR';
+      accumulatedTranscriptRef.current = options?.resetTranscript
+        ? ''
+        : voiceTextRef.current.trim();
+      currentSegmentRef.current = '';
 
-    if (isAndroidNativeApp()) {
-      const nativeAvailable = await isNativeSpeechRecognitionAvailable();
-      if (nativeAvailable) {
-        if (nativeUnsubscribeRef.current) {
-          nativeUnsubscribeRef.current();
-          nativeUnsubscribeRef.current = null;
-        }
+      if (isAndroidNativeApp()) {
+        const nativeAvailable = await isNativeSpeechRecognitionAvailable();
+        if (nativeAvailable) {
+          if (nativeUnsubscribeRef.current) {
+            nativeUnsubscribeRef.current();
+            nativeUnsubscribeRef.current = null;
+          }
 
-        keepListeningRef.current = true;
-        usingNativeSpeechRef.current = true;
-        setIsListening(true);
+          keepListeningRef.current = true;
+          usingNativeSpeechRef.current = true;
+          setIsListening(true);
 
-        nativeUnsubscribeRef.current = await subscribeNativeSpeechEvents({
-          onPartial: (text) => {
-            if (!keepListeningRef.current) return;
-            currentSegmentRef.current = text;
-            setVoiceText(joinTranscriptSegments(accumulatedTranscriptRef.current, text));
-          },
-          onFinal: (text) => {
-            const combined = joinTranscriptSegments(accumulatedTranscriptRef.current, text);
-            accumulatedTranscriptRef.current = combined;
-            currentSegmentRef.current = '';
-            setVoiceText(combined);
-            applyParsedVoice(combined);
-          },
-          onState: (listening) => {
-            if (!listening && !keepListeningRef.current) {
+          nativeUnsubscribeRef.current = await subscribeNativeSpeechEvents({
+            onPartial: (text) => {
+              if (!keepListeningRef.current) return;
+              currentSegmentRef.current = text;
+              setVoiceText(joinTranscriptSegments(accumulatedTranscriptRef.current, text));
+            },
+            onFinal: (text) => {
+              const combined = joinTranscriptSegments(accumulatedTranscriptRef.current, text);
+              accumulatedTranscriptRef.current = combined;
+              currentSegmentRef.current = '';
+              setVoiceText(combined);
+              applyParsedVoice(combined);
+            },
+            onState: (listening) => {
+              if (!listening && !keepListeningRef.current) {
+                setIsListening(false);
+              }
+            },
+            onError: (code, message) => {
+              keepListeningRef.current = false;
+              usingNativeSpeechRef.current = false;
               setIsListening(false);
-            }
-          },
-          onError: (code, message) => {
-            keepListeningRef.current = false;
-            usingNativeSpeechRef.current = false;
-            setIsListening(false);
-            if (nativeUnsubscribeRef.current) {
-              nativeUnsubscribeRef.current();
-              nativeUnsubscribeRef.current = null;
-            }
-            if (code === 'not-allowed') {
-              setVoiceDeniedSettings(true);
-            }
-            setVoiceError(message || 'Não foi possível captar áudio agora. Use o campo de texto abaixo.');
-          },
-        });
+              if (nativeUnsubscribeRef.current) {
+                nativeUnsubscribeRef.current();
+                nativeUnsubscribeRef.current = null;
+              }
+              if (code === 'not-allowed') {
+                setVoiceDeniedSettings(true);
+              }
+              setVoiceError(message || 'Não foi possível captar áudio agora. Use o campo de texto abaixo.');
+            },
+          });
 
-        const started = await startNativeSpeechRecognition(speechLang);
-        if (started.started) {
-          return;
-        }
+          const started = await startNativeSpeechRecognition(speechLang);
+          if (started.started) {
+            return;
+          }
 
-        keepListeningRef.current = false;
-        usingNativeSpeechRef.current = false;
-        setIsListening(false);
-        if (nativeUnsubscribeRef.current) {
-          nativeUnsubscribeRef.current();
-          nativeUnsubscribeRef.current = null;
+          keepListeningRef.current = false;
+          usingNativeSpeechRef.current = false;
+          setIsListening(false);
+          if (nativeUnsubscribeRef.current) {
+            nativeUnsubscribeRef.current();
+            nativeUnsubscribeRef.current = null;
+          }
         }
       }
-    }
 
-    const win = window as unknown as {
-      SpeechRecognition?: new () => SpeechRecognitionLike;
-      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-    };
-    const SpeechCtor = win.SpeechRecognition || win.webkitSpeechRecognition;
+      const win = window as unknown as {
+        SpeechRecognition?: new () => SpeechRecognitionLike;
+        webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+      };
+      const SpeechCtor = win.SpeechRecognition || win.webkitSpeechRecognition;
 
-    if (!SpeechCtor) {
-      setVoiceError(
-        'Reconhecimento de voz direto não disponível neste ambiente. Use o ditado do teclado ou digite a frase.'
-      );
-      return;
-    }
+      if (!SpeechCtor) {
+        setVoiceError(
+          'Reconhecimento de voz direto não disponível neste ambiente. Use o ditado do teclado ou digite a frase.'
+        );
+        return;
+      }
 
-    keepListeningRef.current = true;
-    usingNativeSpeechRef.current = false;
-    setIsListening(true);
-    startWebSpeechSession(SpeechCtor, speechLang);
-  }, [applyParsedVoice, isListening, language, startWebSpeechSession, stopListening, voiceText]);
+      keepListeningRef.current = true;
+      usingNativeSpeechRef.current = false;
+      setIsListening(true);
+      startWebSpeechSession(SpeechCtor, speechLang);
+    },
+    [applyParsedVoice, isListening, language, startWebSpeechSession, stopListening]
+  );
 
   useEffect(() => {
     if (!isOpen) {
@@ -477,7 +537,9 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     }
     accumulatedTranscriptRef.current = '';
     currentSegmentRef.current = '';
+    voiceTextRef.current = '';
     setMonth(Math.min(11, Math.max(0, Number.isFinite(defaultMonth) ? Math.trunc(defaultMonth) : 10)));
+    setEntryYear(Number.isFinite(activeYear) ? Math.trunc(activeYear) : new Date().getFullYear());
     setDay(String(new Date().getDate()));
     setAmount('');
     setShortDescription('');
@@ -485,6 +547,9 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     setInstallmentCurrent('1');
     setInstallmentTotal('1');
     setShowAdvanced(false);
+    setCategorySearch('');
+    setShowNewCatForm(false);
+    setNewCatName('');
     setStatus('paid');
     setVoiceText('');
     setParsedPreview(null);
@@ -513,10 +578,10 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     }
 
     if (autoStartVoice) {
-      void startVoiceCapture();
+      void startVoiceCapture({ resetTranscript: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, defaultMonth, accounts, initialFlowType, autoStartVoice]);
+  }, [isOpen, defaultMonth, activeYear, accounts, initialFlowType, autoStartVoice]);
 
   useEffect(() => {
     return () => {
@@ -537,6 +602,10 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     const parsed = parseFloat(amount.replace(',', '.'));
     if (!Number.isFinite(parsed) || parsed <= 0 || !rowId) return;
     const safeMonth = Math.min(11, Math.max(0, Number.isFinite(month) ? Math.trunc(month) : 0));
+    const safeYear =
+      Number.isFinite(entryYear) && entryYear >= 1900 && entryYear <= 9999
+        ? Math.trunc(entryYear)
+        : activeYear;
     const currentRow = rows.find((r) => r.id === rowId);
     const instTot = Math.min(48, Math.max(1, parseInt(installmentTotal, 10) || 1));
     const instCur = Math.min(instTot, Math.max(1, parseInt(installmentCurrent, 10) || 1));
@@ -544,7 +613,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
 
     onAddEntry({
       rowId,
-      year: activeYear,
+      year: safeYear,
       month: safeMonth,
       day: Math.min(31, Math.max(1, parseInt(day, 10) || 15)),
       amount: Number(parsed.toFixed(2)),
@@ -573,12 +642,19 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
     return r.block === 'fixed' || r.block === 'variable';
   });
 
+  const normalizedCategoryQuery = normalizeSearchText(deferredCategorySearch);
+  const searchedCategoryRows = normalizedCategoryQuery
+    ? filteredCategoryRows.filter((r) =>
+        normalizeSearchText(r.name).includes(normalizedCategoryQuery)
+      )
+    : filteredCategoryRows;
+
   const paymentOptions: PaymentMethod[] = ['pix', 'debit', 'credit', 'cash', 'transfer'];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 pt-safe-screen pb-safe-nav overflow-y-auto">
       <div className="fixed inset-0 bg-black/60 backdrop-blur-xs" onClick={handleClose} />
-      <div className="relative z-10 w-full max-w-md max-h-[92vh] overflow-y-auto rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl">
+      <div className="relative z-10 my-auto w-full max-w-md max-h-[calc(100dvh-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px)-1.25rem)] overflow-y-auto rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] shadow-2xl">
         <div className="px-5 py-3.5 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2 sticky top-0 bg-white dark:bg-[#111827] z-10">
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">
             {t.modals.newEntryTitle}
@@ -601,8 +677,17 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                   : 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-100 dark:hover:bg-blue-950/60'
               }`}
             >
-              <Mic className="h-3.5 w-3.5" />
-              <span>{isListening ? 'Gravando' : 'Por Voz'}</span>
+              {isListening ? (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+                  <span>Ouvindo...</span>
+                </>
+              ) : (
+                <>
+                  <Mic className="h-3.5 w-3.5" />
+                  <span>Por Voz</span>
+                </>
+              )}
             </button>
             <button
               type="button"
@@ -631,8 +716,17 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                     isListening ? 'text-red-700 dark:text-red-300' : 'text-blue-700 dark:text-blue-300'
                   }`}
                 >
-                  <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                  <span>{isListening ? 'Ouvindo seu lançamento...' : 'Preenchimento por Voz ou Frase'}</span>
+                  {isListening ? (
+                    <>
+                      <span className="h-2 w-2 rounded-full bg-red-600 animate-ping shrink-0" />
+                      <span>Ouvindo...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                      <span>Preenchimento por Voz ou Frase</span>
+                    </>
+                  )}
                 </span>
                 {isListening ? (
                   <button
@@ -641,7 +735,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-semibold bg-red-600 hover:bg-red-700 text-white"
                   >
                     <Square className="h-3 w-3 fill-current" />
-                    <span>Encerrar</span>
+                    <span>Parar / Encerrar</span>
                   </button>
                 ) : (
                   <button
@@ -656,11 +750,14 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
               </div>
 
               {isListening && (
-                <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-red-100/90 dark:bg-red-900/35 border border-red-200 dark:border-red-500/30">
+                <div
+                  role="status"
+                  className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-red-100/90 dark:bg-red-900/35 border border-red-200 dark:border-red-500/30"
+                >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="h-2 w-2 rounded-full bg-red-600 animate-ping shrink-0" />
+                    <span className="h-2 w-2 rounded-full bg-red-600 animate-pulse shrink-0" />
                     <span className="text-[11px] font-medium text-red-800 dark:text-red-200 truncate">
-                      Microfone ativo — fale livremente (toque em Encerrar para parar)
+                      Ouvindo... fale livremente até tocar em Parar / Encerrar
                     </span>
                   </div>
                   <button
@@ -668,7 +765,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                     onClick={() => void stopListening()}
                     className="px-2 py-0.5 rounded bg-red-700 text-white text-[10px] font-bold shrink-0"
                   >
-                    Concluir
+                    Parar
                   </button>
                 </div>
               )}
@@ -773,8 +870,8 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
             </button>
           </div>
 
-          {/* 2. Valor + Dia + Mês */}
-          <div className="grid grid-cols-12 gap-2.5">
+          {/* 2. Valor + Dia + Mês + Ano */}
+          <div className="grid grid-cols-12 gap-2">
             <div className="col-span-5">
               <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                 {t.modals.amountLabel}
@@ -792,7 +889,7 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
               />
             </div>
 
-            <div className="col-span-3">
+            <div className="col-span-2">
               <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                 {t.modals.dayLabel}
               </label>
@@ -802,18 +899,18 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                 max="31"
                 value={day}
                 onChange={(e) => setDay(e.target.value)}
-                className="w-full px-2.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white text-center"
+                className="w-full px-1.5 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white text-center"
               />
             </div>
 
-            <div className="col-span-4">
+            <div className="col-span-2">
               <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                 {t.modals.monthLabel}
               </label>
               <select
                 value={month}
                 onChange={(e) => setMonth(Number(e.target.value))}
-                className="w-full px-2.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                className="w-full px-1.5 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
               >
                 {monthNamesFull.map((m, idx) => (
                   <option key={m} value={idx}>
@@ -821,6 +918,23 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="col-span-3">
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                Ano
+              </label>
+              <input
+                type="number"
+                min="1900"
+                max="9999"
+                value={entryYear}
+                onChange={(e) => {
+                  const y = parseInt(e.target.value, 10);
+                  if (Number.isFinite(y)) setEntryYear(y);
+                }}
+                className="w-full px-2 py-2.5 rounded-xl text-sm font-mono tabular-nums bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white text-center"
+              />
             </div>
           </div>
 
@@ -844,22 +958,211 @@ export const NewEntryModal: React.FC<NewEntryModalProps> = ({
             />
           </div>
 
-          {/* 4. Categoria */}
-          <div>
-            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-              {t.modals.categoryRowLabel}
-            </label>
-            <select
-              value={rowId}
-              onChange={(e) => setRowId(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl text-sm bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+          {/* 4. Categoria (busca em tempo real + cor/ícone + criação rápida sem data) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                {t.modals.categoryRowLabel}
+              </label>
+              {onAddRow && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetBlock =
+                      flowType === 'income' ? 'income' : flowType === 'savings' ? 'savings' : newCatBlock;
+                    setNewCatColor(getDefaultCategoryColor(targetBlock));
+                    setNewCatIcon(getDefaultCategoryIcon(targetBlock));
+                    setShowNewCatForm((prev) => !prev);
+                  }}
+                  className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0"
+                >
+                  {showNewCatForm ? 'Cancelar nova categoria' : '+ Nova categoria'}
+                </button>
+              )}
+            </div>
+
+            {/* Active selection bar */}
+            {selectedRow && (
+              <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1]">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <CategoryIconBadge row={selectedRow} size="sm" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                      {selectedRow.name}
+                    </div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                      {selectedRow.block === 'income'
+                        ? 'Receita'
+                        : selectedRow.block === 'fixed'
+                        ? 'Despesa Fixa'
+                        : selectedRow.block === 'variable'
+                        ? 'Despesa Variável'
+                        : 'Caixinha'}
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300 whitespace-nowrap shrink-0">
+                  Selecionada
+                </span>
+              </div>
+            )}
+
+            {/* Searchable input field */}
+            <div className="relative">
+              <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={categorySearch}
+                onChange={(e) => setCategorySearch(e.target.value)}
+                placeholder="Buscar categoria por nome..."
+                aria-label="Buscar categoria"
+                className="w-full pl-8 pr-8 py-2 rounded-xl text-xs bg-slate-50 dark:bg-[#1A2234] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white placeholder:text-slate-400"
+              />
+              {categorySearch && (
+                <button
+                  type="button"
+                  onClick={() => setCategorySearch('')}
+                  aria-label="Limpar busca de categoria"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Real-time filtered category list */}
+            <div
+              role="listbox"
+              aria-label={t.modals.categoryRowLabel}
+              className="max-h-36 overflow-y-auto rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#0D1320] divide-y divide-slate-100 dark:divide-white/[0.05]"
             >
-              {filteredCategoryRows.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name} {r.refDay ? `(Dia ${String(r.refDay).padStart(2, '0')})` : ''}
-                </option>
-              ))}
-            </select>
+              {searchedCategoryRows.length === 0 ? (
+                <div className="p-3 text-center space-y-2">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Nenhuma categoria encontrada para "{categorySearch.trim()}".
+                  </p>
+                  {onAddRow && categorySearch.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetBlock =
+                          flowType === 'income' ? 'income' : flowType === 'savings' ? 'savings' : newCatBlock;
+                        setNewCatColor(getDefaultCategoryColor(targetBlock));
+                        setNewCatIcon(getDefaultCategoryIcon(targetBlock));
+                        setNewCatName(categorySearch.trim().toUpperCase());
+                        setShowNewCatForm(true);
+                      }}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700"
+                    >
+                      <Plus className="h-3 w-3" />
+                      <span>Criar "{categorySearch.trim().toUpperCase()}"</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                searchedCategoryRows.map((r) => {
+                  const isSelected = r.id === rowId;
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      onClick={() => {
+                        setRowId(r.id);
+                      }}
+                      className={`w-full px-3 py-2 flex items-center justify-between gap-2 text-left transition-colors ${
+                        isSelected
+                          ? 'bg-blue-50/90 dark:bg-blue-950/35 text-blue-900 dark:text-blue-100'
+                          : 'hover:bg-white dark:hover:bg-[#151E30] text-slate-700 dark:text-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <CategoryIconBadge row={r} size="xs" />
+                        <span className="text-xs font-medium truncate">{r.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-slate-400">
+                          {r.block === 'income'
+                            ? 'Receita'
+                            : r.block === 'fixed'
+                            ? 'Fixa'
+                            : r.block === 'variable'
+                            ? 'Variável'
+                            : 'Caixinha'}
+                        </span>
+                        {isSelected && <Check className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {showNewCatForm && onAddRow && (
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0D1320] border border-blue-200 dark:border-blue-500/30 space-y-2.5">
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    type="text"
+                    value={newCatName}
+                    onChange={(e) => setNewCatName(e.target.value)}
+                    placeholder="Nome da categoria (sem data)"
+                    className="flex-1 min-w-[150px] px-2.5 py-1.5 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                  />
+                  {flowType === 'expense' && (
+                    <select
+                      value={newCatBlock}
+                      onChange={(e) => setNewCatBlock(e.target.value as 'fixed' | 'variable')}
+                      className="px-2.5 py-1.5 rounded-lg text-xs bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white"
+                    >
+                      <option value="variable">Despesa Variável</option>
+                      <option value="fixed">Despesa Fixa</option>
+                    </select>
+                  )}
+                </div>
+
+                <CategoryVisualPicker
+                  color={newCatColor}
+                  icon={newCatIcon}
+                  onChangeColor={setNewCatColor}
+                  onChangeIcon={setNewCatIcon}
+                  compact
+                />
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    disabled={!newCatName.trim()}
+                    onClick={() => {
+                      const clean = newCatName.trim();
+                      if (!clean) return;
+                      const targetBlock =
+                        flowType === 'income'
+                          ? 'income'
+                          : flowType === 'savings'
+                          ? 'savings'
+                          : newCatBlock;
+                      const created = onAddRow({
+                        block: targetBlock,
+                        name: clean.toUpperCase(),
+                        color: newCatColor,
+                        icon: newCatIcon,
+                      });
+                      if (created && created.id) {
+                        setRowId(created.id);
+                      }
+                      setCategorySearch('');
+                      setNewCatName('');
+                      setShowNewCatForm(false);
+                    }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-40 whitespace-nowrap shrink-0"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Criar e usar</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 5. Forma de Pagamento (1 toque) */}

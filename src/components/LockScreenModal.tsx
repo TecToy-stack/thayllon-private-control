@@ -129,7 +129,7 @@ export const LockScreenModal: React.FC<LockScreenModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 dark:bg-slate-950/95 backdrop-blur-xl px-4 pt-safe-screen pb-safe-nav overflow-y-auto">
-      <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] p-7 text-center shadow-2xl">
+      <div className="my-auto w-full max-w-sm rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-white/[0.1] p-5 sm:p-7 text-center shadow-2xl">
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50 dark:bg-[#1A2234] border border-blue-200 dark:border-blue-500/40 text-blue-600 dark:text-blue-400">
           <Lock className="h-5 w-5" />
         </div>
